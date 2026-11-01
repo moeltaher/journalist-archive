@@ -26,7 +26,7 @@ function renderTurnstile() {
 }
 async function getTurnstileToken() {
   if (!state.turnstileConfigured) throw new Error('مفاتيح Turnstile ليست متاحة على الخادم.');
-  for(let i=0;i<40&&turnstileWidgetId===null;i++){renderTurnstile();if(turnstileWidgetId!==null)break;await sleep(250);}
+  for(let i=0;i<40&&turnstileWidgetId===null;i++){if(window.turnstile)turnstileReady=true;renderTurnstile();if(turnstileWidgetId!==null)break;await sleep(250);}
   if(turnstileWidgetId===null)throw new Error('لم يُحمّل Turnstile. قد يكون المتصفح يمنع سكربت التحقق.');
   return new Promise((resolve,reject)=>{
     tokenResolve=resolve;tokenReject=reject;
