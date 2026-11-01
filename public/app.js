@@ -8,11 +8,17 @@ const refs = {
   description:$('result-description'), list:$('article-list'), selectAll:$('select-all'),
   selected:$('selected-count'), word:$('download-btn'), archive:$('archive-btn'),
   note:$('archive-note'), manual:$('manual-archive'), progress:$('task-progress'),
-  notice:$('notification'), warnings:$('warnings'), previous:$('previous-report')
+  notice:$('notification'), warnings:$('warnings'), previous:$('previous-report'), next:$('next-batch')
 };
 const state = {articles:[], busy:false, iaConfigured:false, archiveState:'checking', title:'مقالات', mode:'article', statusLoaded:false,turnstileConfigured:false};
 let activeReport = null;
 let archiveCheck = null;
+const PROGRESS_KEY = 'journalist-archive-progress-v2';
+const stateProgress = {source:'',mode:'author',nextCursor:null,archived:{}};
+function saveProgress(){try{localStorage.setItem(PROGRESS_KEY,JSON.stringify(stateProgress));}catch{}}
+function loadProgress(){try{const p=JSON.parse(localStorage.getItem(PROGRESS_KEY)||'null');if(p&&typeof p.source==='string'&&p.archived&&typeof p.archived==='object'){Object.assign(stateProgress,p);return true;}}catch{}return false;}
+function recordSuccess(url,archiveUrl){if(!archiveUrl)return;stateProgress.archived[url]=archiveUrl;saveProgress();}
+loadProgress();
 let turnstileWidgetId = null, turnstileSiteKey = '', turnstileReady = false, tokenResolve = null, tokenReject = null;
 window.onTurnstileLoaded = () => { turnstileReady = true; renderTurnstile(); };
 function renderTurnstile() {
@@ -54,6 +60,7 @@ function updateButtons() {
   refs.word.disabled = state.busy || chosen.length === 0;
   refs.archive.disabled = state.busy || chosen.length === 0;
   refs.analyze.disabled = state.busy;
+  if(refs.next){refs.next.hidden=state.mode!=='author'||!stateProgress.nextCursor;refs.next.disabled=state.busy;}
   refs.mode.disabled = state.busy;
   refs.url.disabled = state.busy;
   refs.selectAll.disabled = state.busy;
@@ -160,20 +167,26 @@ function updateItem(item, label, type, archiveUrl) {
   if (item.statusEl) {item.statusEl.textContent = label;item.statusEl.className = `article-status ${type || ''}`;}
   if (archiveUrl && !item.archiveUrl && item.linksEl) {
     item.archiveUrl = archiveUrl;
+    recordSuccess(item.url,archiveUrl);
     attachLink(item.linksEl, 'النسخة المؤرشفة ↗', archiveUrl);
   }
 }
 
 function showResults(response) {
-  state.title = response.title || 'أرشيف مقالات';
+  state.title = response.title || state.title || 'أرشيف مقالات';
   state.mode = response.mode;
-  state.articles = response.articles.map(a => ({...a, selected:true, status:'جاهز'}));
+  stateProgress.nextCursor=response.nextCursor||null;
+  saveProgress();
+  state.articles = response.articles.map(a => {
+    const archiveUrl=stateProgress.archived[a.url] || null;
+    return {...a,selected:!archiveUrl,status:archiveUrl?'مؤرشف سابقًا':'جاهز',statusType:archiveUrl?'success':'',archiveUrl};
+  });
   refs.list.replaceChildren();
-  for (const item of state.articles) refs.list.appendChild(renderItem(item));
+  for (const item of state.articles) {refs.list.appendChild(renderItem(item));if(item.archiveUrl)attachLink(item.linksEl,'النسخة المؤرشفة ↗',item.archiveUrl);}
   const n = state.articles.length;
   refs.count.textContent = `${n} ${n===1?'مقال': 'مقال / رابط'}`;
   refs.description.textContent = response.mode === 'article' ? 'تم التعرف على مقال واحد. اختر طريقة حفظه.' :
-    `هذه روابط مقالات مرشحة من صفحة الكاتب، بعد فحص ${response.scannedPages || 1} صفحة. راجع الاختيار قبل البدء؛ قد لا تشمل النتائج جميع المقالات.`;
+    `هذه مجموعة من مقالات الكاتب (فُحصت ${response.scannedPages||1} صفحات). المقالات المحفوظة سابقًا غير محددة تلقائيًا. ${response.nextCursor?'توجد مقالات أخرى؛ استخدم زر «عرض المقالات التالية».':'لم يُكتشف رابط صفحة تالية.'}`;
   refs.warnings.replaceChildren();
   refs.warnings.hidden = !(response.warnings || []).length;
   for (const warning of response.warnings || []) {
@@ -190,6 +203,7 @@ refs.form.addEventListener('submit', async event => {
   event.preventDefault();
   const url = refs.url.value.trim();
   if (!url) return;
+  if(stateProgress.source!==url){stateProgress.source=url;stateProgress.nextCursor=null;stateProgress.archived={};saveProgress();}
   setBusy(true); announce('نجلب الصفحة ونبحث عن المقالات المنشورة فيها…');
   refs.results.hidden = true;
   try {
@@ -201,6 +215,18 @@ refs.form.addEventListener('submit', async event => {
   finally {setBusy(false);}
 });
 
+if(refs.next) refs.next.addEventListener('click', async () => {
+  if(state.busy||!stateProgress.nextCursor)return;
+  setBusy(true);
+  announce('جاري استخراج المجموعة التالية من مقالات الكاتب…');
+  const cursor=stateProgress.nextCursor;
+  try {
+    const result=await requestJSON('/api/inspect',{url:stateProgress.source,mode:'author',cursor});
+    showResults(result);
+    announce('تم تحميل المجموعة التالية. المقالات المؤرشفة سابقًا غير محددة تلقائيًا.','success');
+  }catch(error){announce(error.message||'تعذّر تحميل المجموعة التالية.','error');}
+  finally{setBusy(false);}
+});
 refs.selectAll.addEventListener('change', () => {
   const checked = refs.selectAll.checked;
   for (const item of state.articles) item.selected=checked;
