@@ -50,3 +50,11 @@ test('article picker keeps candidate URLs within site and deduplicates repeated 
   assert.equal(result.length,1);
   assert.equal(result[0].url,article);
 });
+
+
+test('explicit AJAX load-more links may legitimately start with offset 0',()=>{
+  assert.equal(
+    paginationLink([make(root+'?offset=0','Load more posts')],root,root),
+    root+'?offset=0'
+  );
+});
