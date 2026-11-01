@@ -60,78 +60,136 @@ export function zipFiles(contents) {
   return new Blob([...local,...directory,end], {type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
 }
 
-const PSTYLE = '<w:spacing w:before="0" w:after="170" w:line="370" w:lineRule="auto"/><w:bidi/><w:jc w:val="right"/>';
-function run(text, opts={}) {
-  const size = opts.size || 24;
-  return `<w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/>`+
-    `<w:rtl/><w:lang w:val="ar-SA"/><w:sz w:val="${size}"/><w:szCs w:val="${size}"/>`+
-    `${opts.bold?'<w:b/>':''}${opts.italic?'<w:i/>':''}${opts.color?`<w:color w:val="${opts.color}"/>`:''}</w:rPr>`+
-    `<w:t xml:space="preserve">${xmlEscape(text)}</w:t></w:r>`;
-}
-function paragraph(text, opts={}) {
-  const size = opts.type === 'title' ? 34 : opts.type === 'h2' ? 28 : opts.type === 'h3' ? 25 : opts.type === 'meta' ? 20 : 24;
-  const optsXml = opts.type === 'title' ? '<w:spacing w:before="80" w:after="300"/><w:bidi/><w:jc w:val="right"/>' :
-    opts.type === 'meta' ? '<w:spacing w:before="0" w:after="95"/><w:bidi/><w:jc w:val="right"/>' : PSTYLE;
-  const prefix = opts.type === 'li' ? '• ' : '';
-  return `<w:p><w:pPr>${optsXml}</w:pPr>${run(prefix + text, {size,bold:['title','h2','h3'].includes(opts.type),italic:opts.type==='meta',color:opts.type==='meta'?'62748A':null})}</w:p>`;
-}
-function hyperlink(relId, url) {
-  return `<w:p><w:pPr><w:bidi/><w:jc w:val="right"/><w:spacing w:after="260"/></w:pPr>`+
-    `${run('الرابط الأصلي: ',{size:20,color:'62748A'})}<w:hyperlink r:id="${relId}" w:history="1">`+
-    `<w:r><w:rPr><w:color w:val="2862BC"/><w:u w:val="single"/><w:sz w:val="20"/><w:rtl/></w:rPr>`+
-    `<w:t xml:space="preserve">${xmlEscape(url)}</w:t></w:r></w:hyperlink></w:p>`;
-}
 
-export function buildDocx(articles) {
-  if (!Array.isArray(articles) || articles.length === 0) throw new Error('لا توجد مقالات لإنشاء الملف.');
-  const body = [], relationships = [];
-  for (let i=0; i<articles.length; i++) {
-    const a = articles[i];
-    if (i > 0) body.push('<w:p><w:r><w:br w:type="page"/></w:r></w:p>');
-    body.push(paragraph(a.title || 'مقال بدون عنوان',{type:'title'}));
-    if (a.author) body.push(paragraph(`الكاتب: ${a.author}`,{type:'meta'}));
-    if (a.site) body.push(paragraph(`الموقع: ${a.site}`,{type:'meta'}));
-    if (a.date) body.push(paragraph(`تاريخ النشر: ${a.date}`,{type:'meta'}));
-    if (a.url && /^https?:\/\//.test(a.url)) {
-      const relId = `rId${i+1}`;
-      relationships.push(`<Relationship Id="${relId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${xmlEscape(a.url)}" TargetMode="External"/>`);
-      body.push(hyperlink(relId,a.url));
+  // OOXML font sizes are half-points; 1 CSS px = 0.75pt = 1.5 half-points.
+  export const ARCHIVE_TITLE = 'الأرشيف';
+  export const ARCHIVE_FILENAME = `${ARCHIVE_TITLE}.docx`;
+  const PX = Object.freeze({title:22,h1:18,h2:16,p:14,li:14,meta:12,link:12});
+  const fontSize = type => Math.round((PX[type] || PX.p) * 1.5);
+  const FONT = '<w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial" w:eastAsia="Arial"/>';
+  const STYLES = {title:'Title',h1:'Heading1',h2:'Heading2',p:'Normal',li:'Normal',meta:'ArticleMeta',link:'ArticleLink'};
+  const AR = /[\u0621-\u064A\u066E-\u06D3\u0750-\u077F\u08A0-\u08C9]/g;
+  const LAT = /[a-z]/gi;
+  export function detectDocumentDirection(articles) {
+    let ar=0, en=0;
+    for (const a of articles || []) {
+      const texts = [a?.title || '', ...(a?.blocks || []).slice(0,350).map(x=>x?.text || '')];
+      for (const value of texts) {
+        ar += (String(value).match(AR) || []).length;
+        en += (String(value).match(LAT) || []).length;
+      }
     }
-    for (const block of (a.blocks || []).slice(0, 350)) {
-      if (!block?.text) continue;
-      const type = ['h2','h3','li'].includes(block.type) ? block.type : 'p';
-      body.push(paragraph(block.text,{type}));
-    }
+    return ar >= en ? 'rtl' : 'ltr';
   }
-  const documentXml = xmlHeader +
-    `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>`+
-    body.join('') + `<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1191" w:right="1191" w:bottom="1191" w:left="1191"/></w:sectPr></w:body></w:document>`;
-  const styles = xmlHeader + `<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">`+
-    `<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:lang w:val="ar-SA"/></w:rPr></w:rPrDefault>`+
-    `<w:pPrDefault><w:pPr><w:bidi/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>`;
-  const relationshipXml = xmlHeader + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`+
-    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>`+
-    `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>`+
-    `</Relationships>`;
-  const docRelsXml = xmlHeader + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`+
-    `<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>`+
-    relationships.join('') + `</Relationships>`;
-  const contentTypes = xmlHeader + `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">`+
-    `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>`+
-    `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>`+
-    `<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>`+
-    `<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>`+
-    `</Types>`;
-  const now = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
-  const core = xmlHeader + `<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">`+
-    `<dc:title>أرشيف المقالات</dc:title><dc:creator>أرشيف الصحفي</dc:creator>`+
-    `<dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created></cp:coreProperties>`;
-  return zipFiles({
-    '[Content_Types].xml':contentTypes,
-    '_rels/.rels':relationshipXml,
-    'docProps/core.xml':core,
-    'word/document.xml':documentXml,
-    'word/_rels/document.xml.rels':docRelsXml,
-    'word/styles.xml':styles
-  });
-}
+  function directionXml(dir) {
+    return dir === 'rtl' ? '<w:bidi/><w:jc w:val="right"/>' : '<w:jc w:val="left"/>';
+  }
+  function langXml(dir, url=false) {
+    return url || dir === 'ltr' ? '<w:lang w:val="en-US"/>' : '<w:lang w:val="ar-SA" w:bidi="ar-SA"/>';
+  }
+  function run(text,{type='p',direction='rtl',color,bold=false,url=false}={}) {
+    const size=fontSize(type);
+    const boldXml=bold?'<w:b/><w:bCs/>':'';
+    const rtl=direction==='rtl'&&!url?'<w:rtl/>':'<w:rtl w:val="0"/>';
+    const colorXml=color?`<w:color w:val="${color}"/>`:'';
+    return `<w:r><w:rPr>${FONT}${rtl}${langXml(direction,url)}<w:sz w:val="${size}"/><w:szCs w:val="${size}"/>${boldXml}${colorXml}</w:rPr>`+
+      `<w:t xml:space="preserve">${xmlEscape(text)}</w:t></w:r>`;
+  }
+  function spacing(type) {
+    if(type==='title')return '<w:spacing w:before="80" w:after="240" w:line="400" w:lineRule="auto"/>';
+    if(type==='h1')return '<w:spacing w:before="260" w:after="140" w:line="350" w:lineRule="auto"/>';
+    if(type==='h2')return '<w:spacing w:before="210" w:after="105" w:line="330" w:lineRule="auto"/>';
+    if(type==='meta'||type==='link')return '<w:spacing w:before="0" w:after="65" w:line="280" w:lineRule="auto"/>';
+    return '<w:spacing w:before="0" w:after="135" w:line="340" w:lineRule="auto"/>';
+  }
+  function paragraphProps(type,dir,pageBreak=false) {
+    const keep=['title','h1','h2'].includes(type)?'<w:keepNext/>':'';
+    return `<w:pPr><w:pStyle w:val="${STYLES[type]||'Normal'}"/>${pageBreak?'<w:pageBreakBefore/>':''}${keep}${directionXml(dir)}${spacing(type)}</w:pPr>`;
+  }
+  function paragraph(text,{type='p',direction='rtl',pageBreak=false}={}) {
+    const bold=['title','h1','h2'].includes(type);
+    const prefix=type==='li'?'• ':'';
+    const color=type==='meta'?'64748B':null;
+    return `<w:p>${paragraphProps(type,direction,pageBreak)}${run(prefix+text,{type,direction,bold,color})}</w:p>`;
+  }
+  function hyperlink(id,url,dir) {
+    const label=dir==='rtl'?'الرابط الأصلي: ':'Original link: ';
+    const linkRun=`<w:r><w:rPr>${FONT}<w:rtl w:val="0"/>${langXml(dir,true)}`+
+      `<w:sz w:val="${fontSize('link')}"/><w:szCs w:val="${fontSize('link')}"/>`+
+      '<w:color w:val="2862BC"/><w:u w:val="single"/></w:rPr>'+
+      `<w:t xml:space="preserve">${xmlEscape(url)}</w:t></w:r>`;
+    return `<w:p>${paragraphProps('link',dir)}`+
+      `${run(label,{type:'link',direction:dir,color:'64748B'})}`+
+      `<w:hyperlink r:id="${id}" w:history="1">${linkRun}</w:hyperlink></w:p>`;
+  }
+  function styleXml(id,label,type,dir,{bold=false,outline=null}={}) {
+    const size=fontSize(type);
+    const attr=id==='Normal'?' w:default="1"':'';
+    const basedOn=id==='Normal'?'':'<w:basedOn w:val="Normal"/>';
+    const outlineXml=outline===null?'':`<w:outlineLvl w:val="${outline}"/>`;
+    const keep=['title','h1','h2'].includes(type)?'<w:keepNext/>':'';
+    return `<w:style w:type="paragraph" w:styleId="${id}"${attr}>`+
+      `<w:name w:val="${label}"/>${basedOn}<w:qFormat/>`+
+      `<w:pPr>${directionXml(dir)}${spacing(type)}${keep}${outlineXml}</w:pPr>`+
+      `<w:rPr>${FONT}${langXml(dir)}<w:sz w:val="${size}"/><w:szCs w:val="${size}"/>${bold?'<w:b/><w:bCs/>':''}</w:rPr></w:style>`;
+  }
+  function stylesXml(dir) {
+    return xmlHeader+'<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'+
+      `<w:docDefaults><w:rPrDefault><w:rPr>${FONT}${langXml(dir)}<w:sz w:val="${fontSize('p')}"/><w:szCs w:val="${fontSize('p')}"/></w:rPr></w:rPrDefault>`+
+      `<w:pPrDefault><w:pPr>${directionXml(dir)}</w:pPr></w:pPrDefault></w:docDefaults>`+
+      styleXml('Normal','Normal','p',dir)+
+      styleXml('Title','Title','title',dir,{bold:true})+
+      styleXml('Heading1','heading 1','h1',dir,{bold:true,outline:0})+
+      styleXml('Heading2','heading 2','h2',dir,{bold:true,outline:1})+
+      styleXml('ArticleMeta','Article Metadata','meta',dir)+
+      styleXml('ArticleLink','Article Link','link',dir)+'</w:styles>';
+  }
+  export function buildDocx(articles) {
+    if (!Array.isArray(articles)||articles.length===0) throw new Error('لا توجد مقالات لإنشاء الملف.');
+    const dir=detectDocumentDirection(articles);
+    const labels=dir==='rtl'
+      ? {author:'الكاتب',site:'الموقع',date:'تاريخ النشر',untitled:'مقال بدون عنوان'}
+      : {author:'Author',site:'Publication',date:'Published',untitled:'Untitled article'};
+    const body=[paragraph(ARCHIVE_TITLE,{type:'title',direction:dir})], links=[];
+    for(let i=0;i<articles.length;i++){
+      const a=articles[i];
+      body.push(paragraph(a.title||labels.untitled,{type:'h1',direction:dir,pageBreak:i>0}));
+      if(a.author)body.push(paragraph(`${labels.author}: ${a.author}`,{type:'meta',direction:dir}));
+      if(a.site)body.push(paragraph(`${labels.site}: ${a.site}`,{type:'meta',direction:dir}));
+      if(a.date)body.push(paragraph(`${labels.date}: ${a.date}`,{type:'meta',direction:dir}));
+      if(a.url&&/^https?:\/\//.test(a.url)){
+        const id=`rId${i+1}`;
+        links.push(`<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${xmlEscape(a.url)}" TargetMode="External"/>`);
+        body.push(hyperlink(id,a.url,dir));
+      }
+      for(const block of(a.blocks||[]).slice(0,350)){
+        if(!block?.text)continue;
+        const type=['h1','h2','h3'].includes(block.type)?'h2':block.type==='li'?'li':'p';
+        body.push(paragraph(block.text,{type,direction:dir}));
+      }
+    }
+    const documentXml=xmlHeader+
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>'+
+      body.join('')+`<w:sectPr>${dir==='rtl'?'<w:bidi/>':''}<w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1191" w:right="1191" w:bottom="1191" w:left="1191"/></w:sectPr></w:body></w:document>`;
+    const relationships=xmlHeader+'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'+
+      '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'+
+      '</Relationships>';
+    const docRels=xmlHeader+'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+
+      '<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'+
+      links.join('')+'</Relationships>';
+    const contentTypes=xmlHeader+'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'+
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'+
+      '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'+
+      '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>'+
+      '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>';
+    const now=new Date().toISOString().replace(/\.\d+Z$/,'Z');
+    const core=xmlHeader+'<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'+
+      `<dc:title>${xmlEscape(ARCHIVE_TITLE)}</dc:title><dc:creator>Journalist Archive</dc:creator>`+
+      `<dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created></cp:coreProperties>`;
+    return zipFiles({
+      '[Content_Types].xml':contentTypes,'_rels/.rels':relationships,'docProps/core.xml':core,
+      'word/document.xml':documentXml,'word/_rels/document.xml.rels':docRels,'word/styles.xml':stylesXml(dir)
+    });
+  }
+
