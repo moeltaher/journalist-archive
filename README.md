@@ -89,3 +89,9 @@ npm run deploy
 - Cloudflare [HTMLRewriter](https://developers.cloudflare.com/workers/runtime-apis/html-rewriter/)
 - Internet Archive [Save Page Now](https://web.archive.org/save/)
 - Internet Archive [Save Page Now 2 API documentation](https://docs.google.com/document/d/1Nsv52MvSjbLb2PCpHlat0gkzw0EvtSgpKHu4mk0MnrA/)
+
+## التحقق الأمني عند استخراج المقالات
+
+أصبح Turnstile مطلوبًا على مستوى Cloudflare Worker قبل استخدام `/api/inspect` أو `/api/article`، بما يشمل اكتشاف صفحة الكاتب، الصفحات التالية، واستخراج نصوص Word. عند نجاح الاختبار يصدر تصريح موقّع صالح لمدة ساعة لصفحة المصدر ولموقع الناشر نفسه، ومرتبط بالمتصفح والشبكة. يحتفظ المتصفح بالتصريح في ذاكرة الصفحة فقط، ويطلب اختبارًا آخر عند انتهائه. ويظل طلب الأرشفة في Internet Archive محميًا باختبار Turnstile مستقل. تستخدم هذه الحماية مفتاحَي `TURNSTILE_SITE_KEY` و`TURNSTILE_SECRET_KEY` المضافين مسبقًا إلى Cloudflare.
+
+هذه الحماية تحد من الاستخدام الآلي لكنها لا تمنع كل البوتات، ويظل ضبط حدود السرعة والاستخدام ضروريًا.
