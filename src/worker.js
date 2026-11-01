@@ -129,6 +129,34 @@ function extractStructured(data) {
   return nodes[0] || null;
 }
 
+function itemListLinks(raw, pageUrl) {
+  const out = [];
+  let data;
+  try { data = JSON.parse(raw); } catch { return out; }
+  function collect(node, depth = 0) {
+    if (!node || typeof node !== 'object' || depth > 6 || out.length > 1000) return;
+    if (Array.isArray(node)) {
+      for (const item of node.slice(0,1000)) collect(item,depth+1);
+      return;
+    }
+    const types = Array.isArray(node['@type']) ? node['@type'] : [node['@type']];
+    if (types.some(t => /^(?:ItemList|CollectionPage)$/i.test(String(t || '')))) {
+      for (const element of (Array.isArray(node.itemListElement) ? node.itemListElement : []).slice(0,1000)) {
+        const item = element.item || element;
+        const target = typeof item === 'string' ? item : item.url || item['@id'] || element.url;
+        const label = typeof item === 'string' ? (element.name || '') : (item.name || item.headline || element.name || '');
+        if (!target || !label) continue;
+        try { out.push({url:new URL(target,pageUrl).href,text:cleanText(label),card:true}); }
+        catch { /* malformed item URL */ }
+      }
+    }
+    if (node['@graph']) collect(node['@graph'],depth+1);
+    if (node.mainEntity) collect(node.mainEntity,depth+1);
+  }
+  collect(data);
+  return out.slice(0,1000);
+}
+
 function normalizedBlocks(items) {
   const result = [], seen = new Set();
   for (const item of items) {
@@ -179,7 +207,9 @@ async function parsePage(html, pageUrl) {
         if (!href || links.length >= 3000) return;
         let abs;
         try { abs = new URL(href, pageUrl).href; } catch { return; }
-        const fallbackTitle = e.getAttribute('aria-label') || e.getAttribute('title') || '';
+        const ariaLabel = e.getAttribute('aria-label') || '';
+        const linkTitle = e.getAttribute('title') || '';
+        const fallbackTitle = ariaLabel || linkTitle;
         const state = {value:''};
         // This per-link closure captures nested span/strong text via the handler's text() below.
         this._stack ||= [];
@@ -187,7 +217,9 @@ async function parsePage(html, pageUrl) {
         e.onEndTag(() => {
           const i = this._stack.indexOf(state);
           if (i >= 0) this._stack.splice(i, 1);
-          links.push({url:abs, text: cleanText(state.value) || cleanText(fallbackTitle), rel, card:false});
+          links.push({url:abs, text: cleanText(state.value) || cleanText(fallbackTitle),
+            rel, ariaLabel, title:linkTitle, className:e.getAttribute('class') || '',
+            id:e.getAttribute('id') || '', card:false});
         });
       },
       text(chunk) {
@@ -196,6 +228,43 @@ async function parsePage(html, pageUrl) {
         }
       }
     });
+
+
+  // Some CMSs expose "load more" only via a button's data-url or data-href.
+  // Read declarative URLs; never run arbitrary onClick code or invent API calls.
+  const paginationButtons = () => {
+    const active = [];
+    return {
+      element(element) {
+        if (links.length >= 3000) return;
+        const candidate = ['data-next-url','data-load-more-url','data-more-url',
+          'data-page-url','data-href','data-url'].map(key => element.getAttribute(key)).find(Boolean);
+        if (!candidate) return;
+        let resolved;
+        try { resolved = new URL(candidate, pageUrl).href; } catch { return; }
+        const state = {text:''};
+        active.push(state);
+        element.onEndTag(() => {
+          const at = active.indexOf(state);
+          if (at >= 0) active.splice(at,1);
+          links.push({url:resolved, text:cleanText(state.text),
+            ariaLabel:element.getAttribute('aria-label') || '',
+            title:element.getAttribute('title') || '',
+            className:element.getAttribute('class') || '',
+            id:element.getAttribute('id') || '', rel:'', card:false});
+        });
+      },
+      text(chunk) {
+        for (const state of active) {
+          if (state.text.length < 160) state.text += chunk.text.slice(0,160-state.text.length);
+        }
+      }
+    };
+  };
+  rewriter.on('button',paginationButtons());
+  rewriter.on('[role="button"]',paginationButtons());
+  rewriter.on('[data-next-url]',paginationButtons());
+  rewriter.on('[data-load-more-url]',paginationButtons());
 
   function add(selector, group, type) {
     rewriter.on(selector, collector(text => {
@@ -213,6 +282,9 @@ async function parsePage(html, pageUrl) {
   }
 
   await rewriter.transform(new Response(html, {headers:{'content-type':'text/html; charset=utf-8'}})).text();
+  for (const script of structured) {
+    try { links.push(...itemListLinks(script, pageUrl)); } catch { /* ignore malformed metadata */ }
+  }
   const story = extractStructured(structured);
   const body = chooseBody(sections, story);
   const authorValue = story?.author;
