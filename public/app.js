@@ -10,9 +10,30 @@ const refs = {
   note:$('archive-note'), manual:$('manual-archive'), progress:$('task-progress'),
   notice:$('notification'), warnings:$('warnings'), previous:$('previous-report')
 };
-const state = {articles:[], busy:false, iaConfigured:false, archiveState:'checking', title:'مقالات', mode:'article', statusLoaded:false};
+const state = {articles:[], busy:false, iaConfigured:false, archiveState:'checking', title:'مقالات', mode:'article', statusLoaded:false,turnstileConfigured:false};
 let activeReport = null;
 let archiveCheck = null;
+let turnstileWidgetId = null, turnstileSiteKey = '', turnstileReady = false, tokenResolve = null, tokenReject = null;
+window.onTurnstileLoaded = () => { turnstileReady = true; renderTurnstile(); };
+function renderTurnstile() {
+  if (!turnstileReady || !turnstileSiteKey || turnstileWidgetId !== null || !window.turnstile) return;
+  turnstileWidgetId = window.turnstile.render('turnstile-widget', {
+    sitekey:turnstileSiteKey, action:'archive', execution:'execute', appearance:'interaction-only',
+    callback: token => {const done=tokenResolve;tokenResolve=null;tokenReject=null;if(done)done(token);},
+    'error-callback':()=>{const done=tokenReject;tokenResolve=null;tokenReject=null;if(done)done(new Error('تعذّر تحقق Turnstile. أعد المحاولة.'));},
+    'expired-callback':()=>{const done=tokenReject;tokenResolve=null;tokenReject=null;if(done)done(new Error('انتهت صلاحية التحقق. أعد المحاولة.'));}
+  });
+}
+async function getTurnstileToken() {
+  if (!state.turnstileConfigured) throw new Error('مفاتيح Turnstile ليست متاحة على الخادم.');
+  for(let i=0;i<40&&turnstileWidgetId===null;i++){renderTurnstile();if(turnstileWidgetId!==null)break;await sleep(250);}
+  if(turnstileWidgetId===null)throw new Error('لم يُحمّل Turnstile. قد يكون المتصفح يمنع سكربت التحقق.');
+  return new Promise((resolve,reject)=>{
+    tokenResolve=resolve;tokenReject=reject;
+    try {window.turnstile.reset(turnstileWidgetId);window.turnstile.execute(turnstileWidgetId);}
+    catch(error){tokenResolve=null;tokenReject=null;reject(error);}
+  });
+}
 
 function announce(message, type='info') {
   refs.notice.hidden = false;
@@ -76,6 +97,11 @@ async function refreshArchiveAvailability({silent=false}={}) {
     try {
       const result = await requestJSON('/api/status');
       state.iaConfigured = Boolean(result.archiveConfigured);
+      state.turnstileConfigured = Boolean(result.turnstileConfigured);
+      if (result.turnstileSiteKey && result.turnstileSiteKey !== turnstileSiteKey) {
+        turnstileSiteKey = result.turnstileSiteKey;
+        renderTurnstile();
+      }
       state.archiveState = state.iaConfigured ? 'ready' : 'missing';
       if (!state.iaConfigured && !silent) {
         announce('الخادم لا يرى مفاتيح Internet Archive حاليًا. تحقق من حفظ IA_ACCESS_KEY وIA_SECRET_KEY كأسرار ضمن Production ومن نجاح نشر التغيير، ثم أعد المحاولة.', 'error');
@@ -256,12 +282,25 @@ refs.archive.addEventListener('click', async () => {
     setBusy(false);
     return;
   }
+  let ticket;
+  try {
+    announce('يجري التحقق الأمني قبل بدء الأرشفة…');
+    const token = await getTurnstileToken();
+    const result = await requestJSON('/api/archive-authorize',{token,urls:chosen.map(item=>item.url)});
+    ticket = result.ticket;
+    if (!ticket) throw new Error('لم يصدر تصريح الأرشفة.');
+  } catch(error) {
+    announce(error.message || 'تعذّر التحقق الأمني.', 'error');
+    setBusy(false);
+    return;
+  }
   activeReport = makeReport(chosen, state.title);
   try {
     storeReport(activeReport);
   } catch {
     activeReport = null;
     announce('لا يسمح المتصفح بحفظ تقرير النتائج محليًا. فعّل تخزين المواقع ثم أعد المحاولة، حتى لا تفقد روابط الأرشفة عند الانتقال.', 'error');
+    setBusy(false);
     return;
   }
   if (refs.previous) refs.previous.hidden = false;
@@ -275,7 +314,7 @@ refs.archive.addEventListener('click', async () => {
     saveActiveReport(item, 'pending', item.status);
     setProgress(`إرسال الطلب ${i+1} من ${chosen.length} — تم قبول ${submitted} طلبات`);
     try {
-      const result=await requestJSON('/api/archive',{url:item.url});
+      const result=await requestJSON('/api/archive',{url:item.url,ticket});
       submitted++;
       updateItem(item,'تم إرسال الطلب، في انتظار تأكيد الحفظ…','pending');
       saveActiveReport(item, 'pending', item.status);
