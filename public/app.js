@@ -1,5 +1,6 @@
 import {buildDocx, ARCHIVE_FILENAME} from './docx.js';
 import {makeReport, updateReportItem, storeReport, loadReport} from './archive-report.js';
+import {TurnstileController} from './turnstile-controller.js';
 
 const $ = id => document.getElementById(id);
 const refs = {
@@ -30,43 +31,27 @@ function saveProgress(){try{localStorage.setItem(PROGRESS_KEY,JSON.stringify(sta
 function loadProgress(){try{const p=JSON.parse(localStorage.getItem(PROGRESS_KEY)||'null');if(p&&typeof p.source==='string'&&p.archived&&typeof p.archived==='object'){Object.assign(stateProgress,p);return true;}}catch{}return false;}
 function recordSuccess(url,archiveUrl){if(!archiveUrl)return;stateProgress.archived[url]=archiveUrl;saveProgress();}
 loadProgress();
-let turnstileWidgetId = null, turnstileSiteKey = '', turnstileReady = false, tokenResolve = null, tokenReject = null;
+let turnstileSiteKey = '';
+const turnstileController = new TurnstileController({
+  getApi:() => window.turnstile,
+  locate:id => document.getElementById(id)
+});
 let inspectAccess = null, inspectPending = null;
-window.onTurnstileLoaded = () => { turnstileReady = true; renderTurnstile(); };
-function renderTurnstile() {
-  if (!turnstileReady || !turnstileSiteKey || turnstileWidgetId !== null || !window.turnstile) return;
-  turnstileWidgetId = window.turnstile.render('turnstile-widget', {
-    sitekey:turnstileSiteKey, action:'archive', execution:'execute', appearance:'interaction-only',
-    callback: token => {const done=tokenResolve;tokenResolve=null;tokenReject=null;if(done)done(token);},
-    'error-callback':()=>{const done=tokenReject;tokenResolve=null;tokenReject=null;if(done)done(new Error('تعذّر تحقق Turnstile. أعد المحاولة.'));},
-    'expired-callback':()=>{const done=tokenReject;tokenResolve=null;tokenReject=null;if(done)done(new Error('انتهت صلاحية التحقق. أعد المحاولة.'));}
-  });
-}
+
 async function getTurnstileToken(action='archive') {
-  if (!state.turnstileConfigured || !turnstileSiteKey) {
+  if (!state.statusLoaded || !state.turnstileConfigured || !turnstileSiteKey) {
     await refreshArchiveAvailability({silent:true});
   }
   if (!state.turnstileConfigured) {
-    if (!state.turnstileSiteConfigured) throw new Error('المفتاح العام TURNSTILE_SITE_KEY غير متاح في النسخة المنشورة. تحقق من آخر Deployment.');
-    if (!state.turnstileSecretConfigured) throw new Error('المفتاح السري TURNSTILE_SECRET_KEY غير متاح في Production. أعد تفعيله كـ Secret من Cloudflare.');
-    throw new Error('تعذّر تفعيل Turnstile على الخادم. تحقق من إعدادات Production.');
+    if (!state.turnstileSiteConfigured) throw new Error('المفتاح العام TURNSTILE_SITE_KEY غير متاح في النسخة المنشورة.');
+    if (!state.turnstileSecretConfigured) throw new Error('المفتاح السري TURNSTILE_SECRET_KEY غير متاح في Production.');
+    throw new Error('تعذّر تفعيل Turnstile على الخادم.');
   }
-  for(let i=0;i<40&&turnstileWidgetId===null;i++){if(window.turnstile)turnstileReady=true;renderTurnstile();if(turnstileWidgetId!==null)break;await sleep(250);}
-  if(turnstileWidgetId===null)throw new Error('لم يُحمّل Turnstile. قد يكون المتصفح يمنع سكربت التحقق.');
-  return new Promise((resolve,reject)=>{
-    tokenResolve=resolve;tokenReject=reject;
-    try {
-      window.turnstile.remove(turnstileWidgetId);
-      turnstileWidgetId=window.turnstile.render('turnstile-widget',{
-        sitekey:turnstileSiteKey,action,execution:'execute',appearance:'interaction-only',
-        callback:token=>{const fn=tokenResolve;tokenResolve=null;tokenReject=null;if(fn)fn(token);},
-        'error-callback':()=>{const fn=tokenReject;tokenResolve=null;tokenReject=null;if(fn)fn(new Error('فشل تحقق Turnstile.'));},
-        'expired-callback':()=>{const fn=tokenReject;tokenResolve=null;tokenReject=null;if(fn)fn(new Error('انتهت صلاحية التحقق.'));}
-      });
-      window.turnstile.execute(turnstileWidgetId);
-    }
-    catch(error){tokenResolve=null;tokenReject=null;reject(error);}
-  });
+  // The external script loads independently of app.js; wait only when needed.
+  for (let i=0; i<40 && !window.turnstile?.render; i++) await sleep(250);
+  if (!window.turnstile?.render) throw new Error('لم تُحمّل مكتبة Turnstile. قد يمنع المتصفح سكربت التحقق.');
+  turnstileController.setSiteKey(turnstileSiteKey);
+  return turnstileController.execute(action);
 }
 
 async function accessFor(source) {
@@ -152,7 +137,7 @@ async function refreshArchiveAvailability({silent=false}={}) {
       state.turnstileSecretConfigured = Boolean(result.turnstileSecretConfigured ?? result.turnstileConfigured);
       if (result.turnstileSiteKey && result.turnstileSiteKey !== turnstileSiteKey) {
         turnstileSiteKey = result.turnstileSiteKey;
-        renderTurnstile();
+        turnstileController.setSiteKey(turnstileSiteKey);
       }
       state.archiveState = state.iaConfigured ? 'ready' : 'missing';
       if (!state.iaConfigured && !silent) {

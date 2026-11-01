@@ -143,3 +143,6 @@ footer a{text-decoration:none;color:var(--blue);white-space:nowrap}
 
 /* Author pagination action is always visible within the yellow notice when more pages exist. */
 .warnings .next-batch-button{display:flex;width:100%;margin-top:12px;min-height:50px}
+
+/* Keep interactive Turnstile challenges accessible at each action's location. */
+.turnstile-container{max-width:100%;margin:10px 0 0;direction:ltr;text-align:center}

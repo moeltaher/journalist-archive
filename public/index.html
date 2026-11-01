@@ -8,7 +8,7 @@
   <title>أرشيف الصحفي | احفظ مقالاتك</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" type="module"></script>
-  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=onTurnstileLoaded" async defer></script>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -53,6 +53,7 @@
             </div>
             <button class="btn btn-primary btn-analyze" id="analyze-btn" type="submit"><span class="btn-icon" aria-hidden="true">↖</span> استخرج المقالات</button>
           </div>
+          <div id="inspect-turnstile-widget" class="turnstile-container" aria-label="التحقق الأمني قبل استخراج المقالات"></div>
         </form>
         <p class="form-hint">تعمل الأداة مع صفحات الويب العامة؛ بعض المواقع تمنع الاستخراج الآلي أو تعرض محتواها باستخدام JavaScript.</p>
       </section>
@@ -73,7 +74,7 @@
           <button class="btn btn-word" id="download-btn" type="button"><span aria-hidden="true">↓</span><span>تنزيل ملف Word</span></button>
           <button class="btn btn-archive" id="archive-btn" type="button"><span aria-hidden="true">◷</span><span>أرشفة وعرض الروابط</span></button>
         </div>
-        <div id="turnstile-widget" aria-label="التحقق من المستخدم قبل الأرشفة"></div>
+        <div id="archive-turnstile-widget" class="turnstile-container" aria-label="التحقق الأمني قبل أرشفة المقالات"></div>
         <p class="archive-note" id="archive-note">يمكن تنزيل Word دون الحاجة إلى حساب. تتطلب الأرشفة الآلية تفعيل اتصال Internet Archive.</p>
         <a id="previous-report" class="previous-report" href="/archive-results.html" hidden>عرض روابط آخر عملية أرشفة ←</a>
         <a id="manual-archive" class="manual-link" href="https://web.archive.org/save/" target="_blank" rel="noopener noreferrer" hidden>فتح Wayback للحفظ يدويًا ←</a>

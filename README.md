@@ -99,3 +99,7 @@ npm run deploy
 ## تثبيت Turnstile عبر عمليات النشر
 
 المفتاح العام `TURNSTILE_SITE_KEY` موثّق في `wrangler.jsonc` ضمن `vars`؛ وهو مفتاح متصفح عام وليس سرًا. أُضيف `keep_vars: true` للحفاظ على المتغيرات التي تُضبط من لوحة Cloudflare عند استخدام `wrangler deploy`. يبقى المفتاح `TURNSTILE_SECRET_KEY` سرًا في بيئة Production داخل Cloudflare ولا يُحفظ في المستودع. لا تنسخ المفتاح السري إلى `wrangler.jsonc`. تعرض `/api/status` مؤشرات منطقية لفحص وجود المفتاحين دون كشف السر.
+
+## إصلاح موضع Turnstile
+
+تم فصل الواجهتين: موضع `#inspect-turnstile-widget` داخل نموذج استخراج المقالات، وموضع `#archive-turnstile-widget` داخل نتائج الأرشفة. يُنشأ اختبار كل عملية عند الضغط عليها فقط، باستدعاء Turnstile عبر محدّد CSS يبدأ بـ`#` كما في توثيق Cloudflare، ولا يُنشأ داخل قسم مخفي. لكل عملية `action` مستقل (`inspect` و`archive`) ويظل التحقق على الخادم إلزاميًا.
