@@ -1,4 +1,5 @@
 import {buildDocx, safeFilename} from './docx.js';
+import {makeReport, updateReportItem, storeReport, loadReport} from './archive-report.js';
 
 const $ = id => document.getElementById(id);
 const refs = {
@@ -7,9 +8,10 @@ const refs = {
   description:$('result-description'), list:$('article-list'), selectAll:$('select-all'),
   selected:$('selected-count'), word:$('download-btn'), archive:$('archive-btn'),
   note:$('archive-note'), manual:$('manual-archive'), progress:$('task-progress'),
-  notice:$('notification'), warnings:$('warnings')
+  notice:$('notification'), warnings:$('warnings'), previous:$('previous-report')
 };
 const state = {articles:[], busy:false, iaConfigured:false, title:'مقالات', mode:'article', statusLoaded:false};
+let activeReport = null;
 
 function announce(message, type='info') {
   refs.notice.hidden = false;
@@ -45,6 +47,13 @@ function updateButtons() {
   } else refs.manual.hidden = true;
 }
 function setBusy(value) { state.busy = value; updateButtons(); }
+
+function saveActiveReport(item, status, message, archiveUrl) {
+  if (!activeReport) return;
+  updateReportItem(activeReport, item.url, {status, message, archiveUrl});
+  try { storeReport(activeReport); } catch { /* Final report navigation will handle a storage failure. */ }
+}
+
 
 async function requestJSON(path, data) {
   const res = await fetch(path, data ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)} : undefined);
@@ -186,11 +195,13 @@ async function monitorArchive(item, jobId) {
     try {
       const result = await requestJSON(`/api/archive-status?job=${encodeURIComponent(jobId)}`);
       if (result.status==='success') {
-        updateItem(item,'نجحت الأرشفة'+(result.archiveUrl?' — الرابط متاح':' — يجري تحديث الرابط'),'success',result.archiveUrl);
+        updateItem(item,'نجحت الأرشفة'+(result.archiveUrl?' — الرابط متاح':'، لكن تعذّر الحصول على الرابط'),'success',result.archiveUrl);
+        saveActiveReport(item, result.archiveUrl ? 'success' : 'missing-link', item.status, result.archiveUrl);
         return 'success';
       }
       if (result.status==='error') {
         updateItem(item,`فشلت الأرشفة: ${result.message || 'رفضت الخدمة حفظ الصفحة'}`,'fail');
+        saveActiveReport(item, 'error', item.status);
         return 'error';
       }
     } catch (error) {
@@ -199,12 +210,22 @@ async function monitorArchive(item, jobId) {
     }
   }
   updateItem(item,'أُرسل الطلب، لكن لم يتأكد اكتمال الحفظ. راجعه لاحقًا في Wayback Machine.','pending');
+  saveActiveReport(item, 'unconfirmed', item.status);
   return 'unconfirmed';
 }
 
 refs.archive.addEventListener('click', async () => {
   const chosen = selectedItems();
   if (!chosen.length || !state.iaConfigured) return;
+  activeReport = makeReport(chosen, state.title);
+  try {
+    storeReport(activeReport);
+  } catch {
+    activeReport = null;
+    announce('لا يسمح المتصفح بحفظ تقرير النتائج محليًا. فعّل تخزين المواقع ثم أعد المحاولة، حتى لا تفقد روابط الأرشفة عند الانتقال.', 'error');
+    return;
+  }
+  if (refs.previous) refs.previous.hidden = false;
   setBusy(true);
   announce('بدء إرسال المقالات إلى Wayback Machine. أبق هذه الصفحة مفتوحة أثناء العملية.');
   let submitted=0, declined=0;
@@ -212,15 +233,18 @@ refs.archive.addEventListener('click', async () => {
   for (let i=0;i<chosen.length;i++) {
     const item=chosen[i];
     updateItem(item,'جاري إرسال طلب الأرشفة…','pending');
+    saveActiveReport(item, 'pending', item.status);
     setProgress(`إرسال الطلب ${i+1} من ${chosen.length} — تم قبول ${submitted} طلبات`);
     try {
       const result=await requestJSON('/api/archive',{url:item.url});
       submitted++;
       updateItem(item,'تم إرسال الطلب، في انتظار تأكيد الحفظ…','pending');
+      saveActiveReport(item, 'pending', item.status);
       tracks.push(monitorArchive(item,result.jobId));
     } catch (error) {
       declined++;
       updateItem(item,`لم يُقبل الطلب: ${error.message}`,'fail');
+      saveActiveReport(item, 'error', item.status);
     }
     if (i < chosen.length-1) await sleep(17_000);
   }
@@ -230,8 +254,19 @@ refs.archive.addEventListener('click', async () => {
   const notConfirmed=states.filter(s => s==='unconfirmed').length;
   const failed=declined+states.filter(s => s==='error').length;
   announce(`نجحت أرشفة ${success} مقالًا، وتعذّرت أرشفة ${failed}${notConfirmed?`، وتبقى ${notConfirmed} طلبًا دون تأكيد`:''}.`, failed||notConfirmed?'info':'success');
-  setProgress('اكتملت متابعة الطلبات. راجع حالة كل مقال وروابط النسخ المؤرشفة في القائمة.');
+  setProgress('اكتملت متابعة الطلبات. يجري فتح صفحة روابط النسخ المؤرشفة…');
+  if (activeReport) {
+    activeReport.completedAt = new Date().toISOString();
+    try {
+      storeReport(activeReport);
+      window.location.assign('/archive-results.html');
+      return;
+    } catch {
+      announce('اكتملت الأرشفة، لكن تعذّر فتح تقرير مستقل بسبب قيود تخزين المتصفح. الروابط المتاحة ظاهرة في قائمة المقالات أعلاه.', 'error');
+    }
+  }
   setBusy(false);
+  activeReport = null;
 });
 
 (async () => {
@@ -242,5 +277,6 @@ refs.archive.addEventListener('click', async () => {
     // Word export and manual archiving remain available when status fails.
   }
   state.statusLoaded=true;
+  try { if (refs.previous) refs.previous.hidden = !loadReport(); } catch { /* Storage unavailable. */ }
   updateButtons();
 })();

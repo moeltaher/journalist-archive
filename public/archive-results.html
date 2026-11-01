@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f9fc">
+  <meta name="description" content="روابط المقالات المحفوظة في Wayback Machine ونتيجة أرشفة كل مقال.">
+  <title>روابط المقالات المؤرشفة | أرشيف الصحفي</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/archive-results.js" type="module"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="الرئيسية - أرشيف الصحفي"><span class="brand-icon" aria-hidden="true"><svg viewBox="0 0 32 32" width="24" height="24" fill="none"><rect x="6" y="5" width="20" height="22" rx="3" stroke="currentColor" stroke-width="2"/><path d="M11 11h10M11 16h10M11 21h7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span><span>أرشيف <b>الصحفي</b></span></a>
+      <a href="/" class="back-link">← أرشفة مقالات أخرى</a>
+    </header>
+    <main>
+      <section class="report-intro" aria-labelledby="report-title">
+        <span class="eyebrow">الخطوة 03 · التقرير النهائي</span>
+        <h1 id="report-title">روابط المقالات <span>المؤرشفة</span></h1>
+        <p id="report-subtitle">نُظهر روابط نسخ Wayback Machine التي أكدت الخدمة حفظها. تُعرض الأخطاء والطلبات غير المؤكدة بصورة منفصلة.</p>
+      </section>
+
+      <div id="report-notice" class="notification" role="status" aria-live="polite" hidden></div>
+
+      <section class="panel report-panel" id="report-empty" hidden>
+        <h2>لا توجد نتائج محفوظة على هذا الجهاز</h2>
+        <p>ارجع إلى الصفحة الرئيسية، وأضف رابط المقال أو صفحة الكاتب، ثم اضغط «أرشفة في Wayback Machine».</p>
+        <a class="btn btn-primary" href="/">الانتقال إلى الأداة</a>
+      </section>
+
+      <div id="report-body" hidden>
+        <div class="report-summary" aria-label="ملخص الأرشفة">
+          <div class="summary-tile"><span class="summary-number" id="report-count">0</span><span>إجمالي المقالات</span></div>
+          <div class="summary-tile"><span class="summary-number saved" id="report-saved">0</span><span>روابط مؤرشفة مؤكدة</span></div>
+          <div class="summary-tile"><span class="summary-number" id="report-not-confirmed">0</span><span>غير مؤكدة أو بلا رابط</span></div>
+          <div class="summary-tile"><span class="summary-number failed" id="report-failed">0</span><span>تعذّر حفظها</span></div>
+        </div>
+        <section class="panel report-panel" aria-labelledby="saved-heading">
+          <div class="section-heading report-title-line"><div><span class="step-number">✓</span><h2 id="saved-heading">روابط النسخ المؤرشفة</h2></div><span id="report-date" class="light-note"></span></div>
+          <p class="result-description report-description">اضغط «فتح النسخة» للانتقال إلى المقال على archive.org، أو انسخ الروابط للاحتفاظ بها.</p>
+          <div class="report-actions">
+            <button class="btn btn-primary" id="copy-all" type="button">نسخ جميع روابط الأرشفة</button>
+            <button class="btn btn-word" id="download-links" type="button">تنزيل الروابط TXT</button>
+          </div>
+          <div id="saved-list" class="report-list"></div>
+          <p class="report-empty-line" id="no-saved" hidden>لم تؤكد Wayback Machine حفظ أي مقال برابط مؤرشف حتى الآن.</p>
+        </section>
+        <section class="panel report-panel" id="other-panel" aria-labelledby="other-heading" hidden>
+          <div class="section-heading"><div><span class="step-number">!</span><h2 id="other-heading">مقالات بلا رابط مؤرشف مؤكد</h2></div></div>
+          <p class="result-description">الطلبات المرفوضة، أو التي انتهى وقت متابعتها، أو التي نجح حفظها دون أن تُرجع الخدمة رابطًا صالحًا.</p>
+          <div id="other-list" class="report-list"></div>
+        </section>
+        <div class="report-bottom"><a class="btn btn-primary" href="/">أرشفة روابط أخرى</a><p>هذه النتائج محفوظة محليًا في هذا المتصفح، ولا تنشئ صفحة عامة قابلة للمشاركة. يمكنك نسخ الروابط أو تنزيلها. وستستبدلها عملية أرشفة جديدة.</p></div>
+      </div>
+    </main>
+    <footer><p>مشروع مفتوح المصدر لحفظ العمل الصحفي.</p><a href="https://github.com/moeltaher/journalist-archive" target="_blank" rel="noopener noreferrer">المشروع على GitHub ↗</a></footer>
+  </div>
+</body>
+</html>
