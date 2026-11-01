@@ -10,8 +10,9 @@ const refs = {
   note:$('archive-note'), manual:$('manual-archive'), progress:$('task-progress'),
   notice:$('notification'), warnings:$('warnings'), previous:$('previous-report')
 };
-const state = {articles:[], busy:false, iaConfigured:false, title:'مقالات', mode:'article', statusLoaded:false};
+const state = {articles:[], busy:false, iaConfigured:false, archiveState:'checking', title:'مقالات', mode:'article', statusLoaded:false};
 let activeReport = null;
+let archiveCheck = null;
 
 function announce(message, type='info') {
   refs.notice.hidden = false;
@@ -30,16 +31,20 @@ function updateButtons() {
   refs.selectAll.checked = chosen.length > 0 && chosen.length === state.articles.length;
   refs.selectAll.indeterminate = chosen.length > 0 && chosen.length < state.articles.length;
   refs.word.disabled = state.busy || chosen.length === 0;
-  refs.archive.disabled = state.busy || chosen.length === 0 || !state.iaConfigured;
+  refs.archive.disabled = state.busy || chosen.length === 0;
   refs.analyze.disabled = state.busy;
   refs.mode.disabled = state.busy;
   refs.url.disabled = state.busy;
   refs.selectAll.disabled = state.busy;
   refs.list.querySelectorAll('input[type=checkbox]').forEach(input => { input.disabled=state.busy; });
-  if (!state.iaConfigured) {
-    refs.note.textContent = 'الأرشفة الآلية تحتاج إلى مفاتيح Internet Archive في إعدادات Cloudflare. يمكنك تنزيل Word الآن أو الحفظ يدويًا.';
+  if (state.archiveState === 'ready') {
+    refs.note.textContent = 'الاتصال مُفعّل. عند الضغط على زر الأرشفة سنعيد التحقق ثم نرسل الروابط إلى Internet Archive.';
+  } else if (state.archiveState === 'checking') {
+    refs.note.textContent = 'نجري التحقق من اتصال Internet Archive. يمكنك الضغط على زر الأرشفة لإعادة التحقق.';
+  } else if (state.archiveState === 'missing') {
+    refs.note.textContent = 'لا يرى التطبيق مفاتيح Internet Archive في النسخة المنشورة حاليًا. اضغط على زر الأرشفة لإعادة التحقق، أو راجع أسرار Production والنشر في Cloudflare.';
   } else {
-    refs.note.textContent = 'يُرسل كل رابط على حدة إلى Internet Archive، ويُتحقق من النتيجة. أبقِ الصفحة مفتوحة أثناء الأرشفة الجماعية.';
+    refs.note.textContent = 'تعذّر فحص اتصال Internet Archive. اضغط على زر الأرشفة لإعادة المحاولة؛ يمكن تنزيل Word بصورة مستقلة.';
   }
   if (chosen.length === 1 && !state.iaConfigured) {
     refs.manual.href = `https://web.archive.org/save/${chosen[0].url}`;
@@ -56,11 +61,38 @@ function saveActiveReport(item, status, message, archiveUrl) {
 
 
 async function requestJSON(path, data) {
-  const res = await fetch(path, data ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)} : undefined);
+  const res = await fetch(path, data ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)} : {cache:'no-store'});
   let json;
   try { json = await res.json(); } catch { throw new Error('لم يستجب الخادم ببيانات مفهومة.'); }
   if (!res.ok) throw new Error(json?.error || `تعذّر تنفيذ الطلب (${res.status}).`);
   return json;
+}
+
+async function refreshArchiveAvailability({silent=false}={}) {
+  if (archiveCheck) return archiveCheck;
+  state.archiveState = 'checking';
+  updateButtons();
+  archiveCheck = (async () => {
+    try {
+      const result = await requestJSON('/api/status');
+      state.iaConfigured = Boolean(result.archiveConfigured);
+      state.archiveState = state.iaConfigured ? 'ready' : 'missing';
+      if (!state.iaConfigured && !silent) {
+        announce('الخادم لا يرى مفاتيح Internet Archive حاليًا. تحقق من حفظ IA_ACCESS_KEY وIA_SECRET_KEY كأسرار ضمن Production ومن نجاح نشر التغيير، ثم أعد المحاولة.', 'error');
+      }
+      return state.iaConfigured;
+    } catch (error) {
+      state.iaConfigured = false;
+      state.archiveState = 'error';
+      if (!silent) announce('تعذّر الاتصال بالخادم للتحقق من الأرشفة: ' + (error.message || 'خطأ غير معروف'), 'error');
+      return false;
+    } finally {
+      state.statusLoaded = true;
+      updateButtons();
+    }
+  })();
+  try { return await archiveCheck; }
+  finally { archiveCheck = null; }
 }
 
 function attachLink(parent, title, url) {
@@ -124,6 +156,7 @@ function showResults(response) {
   refs.results.hidden = false;
   setProgress('');
   updateButtons();
+  void refreshArchiveAvailability({silent:true});
   refs.results.scrollIntoView({behavior:'smooth',block:'start'});
 }
 
@@ -216,7 +249,13 @@ async function monitorArchive(item, jobId) {
 
 refs.archive.addEventListener('click', async () => {
   const chosen = selectedItems();
-  if (!chosen.length || !state.iaConfigured) return;
+  if (!chosen.length || state.busy) return;
+  setBusy(true);
+  const ready = await refreshArchiveAvailability({silent:false});
+  if (!ready) {
+    setBusy(false);
+    return;
+  }
   activeReport = makeReport(chosen, state.title);
   try {
     storeReport(activeReport);
@@ -269,14 +308,12 @@ refs.archive.addEventListener('click', async () => {
   activeReport = null;
 });
 
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && !state.busy) void refreshArchiveAvailability({silent:true});
+});
+
 (async () => {
-  try {
-    const result=await requestJSON('/api/status');
-    state.iaConfigured=Boolean(result.archiveConfigured);
-  } catch {
-    // Word export and manual archiving remain available when status fails.
-  }
-  state.statusLoaded=true;
   try { if (refs.previous) refs.previous.hidden = !loadReport(); } catch { /* Storage unavailable. */ }
   updateButtons();
+  await refreshArchiveAvailability({silent:true});
 })();
