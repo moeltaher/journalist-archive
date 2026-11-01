@@ -31,6 +31,7 @@ function loadProgress(){try{const p=JSON.parse(localStorage.getItem(PROGRESS_KEY
 function recordSuccess(url,archiveUrl){if(!archiveUrl)return;stateProgress.archived[url]=archiveUrl;saveProgress();}
 loadProgress();
 let turnstileWidgetId = null, turnstileSiteKey = '', turnstileReady = false, tokenResolve = null, tokenReject = null;
+let inspectAccess = null, inspectPending = null;
 window.onTurnstileLoaded = () => { turnstileReady = true; renderTurnstile(); };
 function renderTurnstile() {
   if (!turnstileReady || !turnstileSiteKey || turnstileWidgetId !== null || !window.turnstile) return;
@@ -41,17 +42,38 @@ function renderTurnstile() {
     'expired-callback':()=>{const done=tokenReject;tokenResolve=null;tokenReject=null;if(done)done(new Error('انتهت صلاحية التحقق. أعد المحاولة.'));}
   });
 }
-async function getTurnstileToken() {
+async function getTurnstileToken(action='archive') {
   if (!state.turnstileConfigured) throw new Error('مفاتيح Turnstile ليست متاحة على الخادم.');
   for(let i=0;i<40&&turnstileWidgetId===null;i++){if(window.turnstile)turnstileReady=true;renderTurnstile();if(turnstileWidgetId!==null)break;await sleep(250);}
   if(turnstileWidgetId===null)throw new Error('لم يُحمّل Turnstile. قد يكون المتصفح يمنع سكربت التحقق.');
   return new Promise((resolve,reject)=>{
     tokenResolve=resolve;tokenReject=reject;
-    try {window.turnstile.reset(turnstileWidgetId);window.turnstile.execute(turnstileWidgetId);}
+    try {
+      window.turnstile.remove(turnstileWidgetId);
+      turnstileWidgetId=window.turnstile.render('turnstile-widget',{
+        sitekey:turnstileSiteKey,action,execution:'execute',appearance:'interaction-only',
+        callback:token=>{const fn=tokenResolve;tokenResolve=null;tokenReject=null;if(fn)fn(token);},
+        'error-callback':()=>{const fn=tokenReject;tokenResolve=null;tokenReject=null;if(fn)fn(new Error('فشل تحقق Turnstile.'));},
+        'expired-callback':()=>{const fn=tokenReject;tokenResolve=null;tokenReject=null;if(fn)fn(new Error('انتهت صلاحية التحقق.'));}
+      });
+      window.turnstile.execute(turnstileWidgetId);
+    }
     catch(error){tokenResolve=null;tokenReject=null;reject(error);}
   });
 }
 
+async function accessFor(source) {
+  if (inspectAccess?.source===source && Date.now()<inspectAccess.expiry-60000) return inspectAccess.ticket;
+  if (inspectPending) return inspectPending;
+  inspectPending=(async()=>{
+    const token=await getTurnstileToken('inspect');
+    const response=await requestJSON('/api/inspect-authorize',{url:source,token});
+    if(!response.accessTicket)throw new Error('لم يصدر تصريح استخراج المقالات.');
+    inspectAccess={source,ticket:response.accessTicket,expiry:Date.parse(response.expiresAt)};
+    return response.accessTicket;
+  })();
+  try{return await inspectPending;}finally{inspectPending=null;}
+}
 function announce(message, type='info') {
   refs.notice.hidden = false;
   refs.notice.textContent = message;
@@ -226,7 +248,8 @@ refs.form.addEventListener('submit', async event => {
   setBusy(true); announce('نجلب الصفحة ونبحث عن المقالات المنشورة فيها…');
   refs.results.hidden = true;
   try {
-    const result = await requestJSON('/api/inspect',{url,mode:refs.mode.value});
+    const accessTicket=await accessFor(url);
+    const result = await requestJSON('/api/inspect',{url,mode:refs.mode.value,accessTicket});
     showResults(result);
     announce(result.articles.length ? `تم العثور على ${result.articles.length} رابطًا. راجع القائمة ثم اختر تنزيل Word أو الأرشفة.` :
       'اكتمل فحص الرابط، لكن لم نعثر على مقالات قابلة للاختيار.', result.articles.length?'success':'info');
@@ -240,7 +263,8 @@ if(refs.next) refs.next.addEventListener('click', async () => {
   announce('جاري استخراج المجموعة التالية من مقالات الكاتب…');
   const cursor=stateProgress.nextCursor;
   try {
-    const result=await requestJSON('/api/inspect',{url:stateProgress.source,mode:'author',cursor});
+    const accessTicket=await accessFor(stateProgress.source);
+    const result=await requestJSON('/api/inspect',{url:stateProgress.source,mode:'author',cursor,accessTicket});
     showResults(result);
     announce('تم تحميل المجموعة التالية. المقالات المؤرشفة سابقًا غير محددة تلقائيًا.','success');
   }catch(error){announce(error.message||'تعذّر تحميل المجموعة التالية.','error');}
@@ -265,7 +289,8 @@ refs.word.addEventListener('click', async () => {
       const item = chosen[at];
       updateItem(item, 'جاري استخراج النص…', 'pending');
       try {
-        const data = await requestJSON('/api/article',{url:item.url});
+        const accessTicket=await accessFor(stateProgress.source||item.url);
+        const data = await requestJSON('/api/article',{url:item.url,accessTicket});
         articles[at] = data;
         updateItem(item, 'تم استخراج النص', 'success');
       } catch (error) {
@@ -277,6 +302,7 @@ refs.word.addEventListener('click', async () => {
     }
   };
   try {
+    await accessFor(stateProgress.source||chosen[0].url);
     await Promise.all(Array.from({length:Math.min(3,chosen.length)},work));
     const valid = articles.filter(Boolean);
     if (!valid.length) throw new Error('لم نتمكن من استخراج أي مقال. جرّب رابط مقال منفرد أو موقعًا آخر.');
@@ -330,7 +356,7 @@ refs.archive.addEventListener('click', async () => {
   let ticket;
   try {
     announce('يجري التحقق الأمني قبل بدء الأرشفة…');
-    const token = await getTurnstileToken();
+    const token = await getTurnstileToken('archive');
     const result = await requestJSON('/api/archive-authorize',{token,urls:chosen.map(item=>item.url)});
     ticket = result.ticket;
     if (!ticket) throw new Error('لم يصدر تصريح الأرشفة.');
@@ -407,7 +433,8 @@ document.addEventListener('visibilitychange', () => {
     if(!cursor){announce('لا توجد صفحة تالية محفوظة لهذه المجموعة. يمكنك إعادة فحص صفحة الكاتب.','info');return;}
     setBusy(true);
     try{
-      const result=await requestJSON('/api/inspect',{url:stateProgress.source,mode:'author',cursor});
+      const accessTicket=await accessFor(stateProgress.source);
+    const result=await requestJSON('/api/inspect',{url:stateProgress.source,mode:'author',cursor,accessTicket});
       showResults(result);
       announce('تم الانتقال إلى المجموعة التالية دون إعادة أرشفة المقالات المحفوظة سابقًا.','success');
       window.history.replaceState(null,'','/');
