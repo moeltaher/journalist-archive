@@ -49,20 +49,21 @@ test('styles use Arial with requested CSS-pixel sizes converted to OOXML half-po
     ['Title',33,true],['Heading1',27,true],['Heading2',24,true],
     ['Normal',21,false],['ArticleMeta',18,false],['ArticleLink',18,false]
   ]) {
-    const match=styles.match(new RegExp('<w:style [^>]*w:styleId="'+id+'"[^>]*>([\\s\\S]*?)<\\/w:style>'));
-    assert.ok(match, 'missing style '+id);
-    assert.ok(match[1].includes('<w:sz w:val="'+halfPoints+'"/>'), 'font size mismatch in '+id);
-    assert.ok(match[1].includes('w:ascii="Arial"'), 'font mismatch in '+id);
-    assert.equal(match[1].includes('<w:b/>'),bold,'bold mismatch in '+id);
+    const segment=styles.split('<w:style ').find(x=>x.includes('w:styleId="'+id+'"'));
+    assert.ok(segment, 'missing style '+id);
+    const style=segment.split('</w:style>')[0];
+    assert.ok(style.includes('<w:sz w:val="'+halfPoints+'"/>'), 'font size mismatch in '+id);
+    assert.ok(style.includes('w:ascii="Arial"'), 'font mismatch in '+id);
+    assert.equal(style.includes('<w:b/>'),bold,'bold mismatch in '+id);
   }
 });
 
 test('Arabic content is RTL and right-aligned in every paragraph', async () => {
   assert.equal(detectDocumentDirection([ar]),'rtl');
   const parts=await zipParts(buildDocx([ar]));
-  const paragraphs=[...parts['word/document.xml'].matchAll(/<w:p>([\\s\\S]*?)<\\/w:p>/g)];
+  const paragraphs=parts['word/document.xml'].split('<w:p>').slice(1).map(x=>x.split('</w:p>')[0]);
   assert.ok(paragraphs.length>=7);
-  for(const [,p] of paragraphs) {
+  for(const p of paragraphs) {
     assert.ok(p.includes('<w:bidi/>'),'paragraph missing RTL');
     assert.ok(p.includes('<w:jc w:val="right"/>'),'paragraph missing right alignment');
   }
@@ -71,9 +72,9 @@ test('Arabic content is RTL and right-aligned in every paragraph', async () => {
 test('English content is LTR and left-aligned in every paragraph', async () => {
   assert.equal(detectDocumentDirection([en]),'ltr');
   const parts=await zipParts(buildDocx([en]));
-  const paragraphs=[...parts['word/document.xml'].matchAll(/<w:p>([\\s\\S]*?)<\\/w:p>/g)];
+  const paragraphs=parts['word/document.xml'].split('<w:p>').slice(1).map(x=>x.split('</w:p>')[0]);
   assert.ok(paragraphs.length>=7);
-  for(const [,p] of paragraphs) {
+  for(const p of paragraphs) {
     assert.ok(!p.includes('<w:bidi/>'),'unexpected RTL paragraph');
     assert.ok(p.includes('<w:jc w:val="left"/>'),'paragraph missing left alignment');
   }
@@ -84,7 +85,7 @@ test('English content is LTR and left-aligned in every paragraph', async () => {
 test('multiple articles start new pages, with a single document title', async () => {
   const parts=await zipParts(buildDocx([ar,ar]));
   const xml=parts['word/document.xml'];
-  assert.equal((xml.match(/<w:pageBreakBefore\\/>/g)||[]).length,1);
-  assert.equal((xml.match(/<w:pStyle w:val="Title"\\/>/g)||[]).length,1);
-  assert.equal((xml.match(/<w:pStyle w:val="Heading1"\\/>/g)||[]).length,2);
+  assert.equal(xml.split('<w:pageBreakBefore/>').length-1,1);
+  assert.equal(xml.split('<w:pStyle w:val="Title"/>').length-1,1);
+  assert.equal(xml.split('<w:pStyle w:val="Heading1"/>').length-1,2);
 });
