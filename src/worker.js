@@ -2,6 +2,7 @@ import {
   cleanText, safePublicUrl, sameSite, isAuthorPath, pickArticles,
   paginationLink, htmlDecodeLoose, normalizeDate
 } from './utils.js';
+export {ArchiveQuota} from './archive-quota.js';
 
 const MAX_PAGE_BYTES = 2_600_000;
 const MAX_AUTHOR_PAGES = 4;
@@ -282,9 +283,9 @@ async function extractedArticle(url) {
     date:page.date, blocks:page.blocks, characters:contentLength};
 }
 
-async function checkRate(binding, request) {
+async function checkRate(binding, request, globalKey = null) {
   if (!binding) return;
-  const key = request.headers.get('CF-Connecting-IP') || 'anonymous';
+  const key = globalKey || request.headers.get('CF-Connecting-IP') || 'anonymous';
   const {success} = await binding.limit({key});
   if (!success) throw new ApiError('طلبات كثيرة في وقت قصير. حاول مجددًا بعد دقيقة.', 429);
 }
@@ -399,6 +400,18 @@ async function requireArchiveTicket(ticket, url, request, env) {
   }
 }
 
+async function requireDailyQuota(env) {
+  if(!env.ARCHIVE_QUOTA)throw new ApiError('عداد حماية الأرشفة غير مفعّل.',503);
+  try {
+    const stub=env.ARCHIVE_QUOTA.get(env.ARCHIVE_QUOTA.idFromName('archive-account'));
+    const result=await stub.takeArchiveAttempt();
+    if(result?.allowed===false)throw new ApiError('اكتمل الحد اليومي البالغ 100 محاولة أرشفة. حاول بعد منتصف الليل UTC.',429);
+    if(result?.allowed!==true)throw new Error('invalid quota response');
+  }catch(error){
+    if(error instanceof ApiError)throw error;
+    throw new ApiError('تعذّر فحص الحصة اليومية. أعد المحاولة لاحقًا.',503);
+  }
+}
 function archiveHeaders(env) {
   return {'Accept':'application/json', 'Authorization':`LOW ${env.IA_ACCESS_KEY}:${env.IA_SECRET_KEY}`};
 }
@@ -447,14 +460,17 @@ export default {
         turnstileConfigured:Boolean(env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET_KEY),
         turnstileSiteKey:env.TURNSTILE_SITE_KEY || ''
       });
-      if (path === '/api/archive-status' && request.method === 'GET') {
-        await checkRate(env.ARTICLE_LIMITER, request);
-        return json(await archiveStatus(new URL(request.url).searchParams.get('job') || '', env));
-      }
       if (request.method !== 'POST') throw new ApiError('هذه العملية غير مدعومة.', 405);
       const incomingOrigin = request.headers.get('Origin');
       if (incomingOrigin && incomingOrigin !== new URL(request.url).origin) throw new ApiError('طلبات النطاقات الأخرى غير مسموحة.', 403);
+      if (request.headers.get('Sec-Fetch-Site') === 'cross-site') throw new ApiError('الطلبات الخارجية غير مسموحة.',403);
       const payload = await parseBody(request);
+      if (path === '/api/archive-status') {
+        await checkRate(env.ARTICLE_LIMITER, request);
+        const url=safePublicUrl(payload.url);
+        await requireArchiveTicket(payload.ticket,url,request,env);
+        return json(await archiveStatus(payload.job || '', env));
+      }
       if (path === '/api/archive-authorize') {
         await checkRate(env.INSPECT_LIMITER, request);
         const urls = checkedUrls(payload.urls);
@@ -474,6 +490,9 @@ export default {
       if (path === '/api/archive') {
         await checkRate(env.ARCHIVE_LIMITER, request);
         await requireArchiveTicket(payload.ticket, url, request, env);
+        if(!env.IA_ACCESS_KEY||!env.IA_SECRET_KEY)throw new ApiError('لم تُفعّل مفاتيح الأرشفة.',503);
+        await checkRate(env.GLOBAL_ARCHIVE_MINUTE_LIMITER,request,'all-users');
+        await requireDailyQuota(env);
         return json(await submitArchive(url, env));
       }
       throw new ApiError('العنوان المطلوب غير موجود.', 404);

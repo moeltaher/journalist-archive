@@ -248,11 +248,11 @@ refs.word.addEventListener('click', async () => {
   finally {setBusy(false);}
 });
 
-async function monitorArchive(item, jobId) {
+async function monitorArchive(item, jobId, ticket) {
   for (let attempt=0; attempt<24; attempt++) {
     await sleep(6000);
     try {
-      const result = await requestJSON(`/api/archive-status?job=${encodeURIComponent(jobId)}`);
+      const result = await requestJSON('/api/archive-status',{job:jobId,url:item.url,ticket});
       if (result.status==='success') {
         updateItem(item,'نجحت الأرشفة'+(result.archiveUrl?' — الرابط متاح':'، لكن تعذّر الحصول على الرابط'),'success',result.archiveUrl);
         saveActiveReport(item, result.archiveUrl ? 'success' : 'missing-link', item.status, result.archiveUrl);
@@ -318,7 +318,7 @@ refs.archive.addEventListener('click', async () => {
       submitted++;
       updateItem(item,'تم إرسال الطلب، في انتظار تأكيد الحفظ…','pending');
       saveActiveReport(item, 'pending', item.status);
-      tracks.push(monitorArchive(item,result.jobId));
+      tracks.push(monitorArchive(item,result.jobId,ticket));
     } catch (error) {
       declined++;
       updateItem(item,`لم يُقبل الطلب: ${error.message}`,'fail');
