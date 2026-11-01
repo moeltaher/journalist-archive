@@ -381,4 +381,18 @@ document.addEventListener('visibilitychange', () => {
   try { if (refs.previous) refs.previous.hidden = !loadReport(); } catch { /* Storage unavailable. */ }
   updateButtons();
   await refreshArchiveAvailability({silent:true});
+  if(new URLSearchParams(window.location.search).get('continue')==='1' && stateProgress.source) {
+    refs.url.value=stateProgress.source;
+    refs.mode.value='author';
+    const cursor=stateProgress.nextCursor;
+    if(!cursor){announce('لا توجد صفحة تالية محفوظة لهذه المجموعة. يمكنك إعادة فحص صفحة الكاتب.','info');return;}
+    setBusy(true);
+    try{
+      const result=await requestJSON('/api/inspect',{url:stateProgress.source,mode:'author',cursor});
+      showResults(result);
+      announce('تم الانتقال إلى المجموعة التالية دون إعادة أرشفة المقالات المحفوظة سابقًا.','success');
+      window.history.replaceState(null,'','/');
+    }catch(error){announce(error.message||'تعذّر متابعة المجموعة التالية.','error');}
+    finally{setBusy(false);}
+  }
 })();
