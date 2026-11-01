@@ -85,23 +85,55 @@ export function pickArticles(links, pageUrl, max = 45) {
     .map(({url, title}) => ({url, title}));
 }
 
+/**
+ * Follows pagination and "load more" links exposed in the HTML, without
+ * hard-coding any publisher. Never guesses an unpublished URL.
+ */
 export function paginationLink(links, currentUrl, rootUrl) {
-  const current = new URL(currentUrl), root = new URL(rootUrl);
-  const base = root.pathname.replace(/\/(?:page|paged)\/\d+\/?$/i, '').replace(/\/$/, '') || '/';
+  const current = new URL(safePublicUrl(currentUrl));
+  const root = new URL(safePublicUrl(rootUrl));
+  const base = root.pathname.replace(/\/(?:page|paged)\/\d+\/?$/i,'').replace(/\/$/, '') || '/';
+  const pageNumber = url => {
+    for (const param of ['page','paged','pg','pagenum','page_num','offset','start','skip']) {
+      const value=url.searchParams.get(param);
+      if (value !== null && /^\d{1,7}$/.test(value)) return Number(value);
+    }
+    const found=/\/(?:page|paged)\/(\d+)\/?$/i.exec(url.pathname);
+    return found ? Number(found[1]) : null;
+  };
+  const currentNumber = pageNumber(current) ?? 0;
+  const possible = [];
+  const seen = new Set();
   for (const link of links) {
-    if (!sameSite(link.url, currentUrl) || link.url === currentUrl) continue;
-    let u;
-    try { u = new URL(safePublicUrl(link.url)); } catch { continue; }
-    const pathname = u.pathname.replace(/\/$/, '') || '/';
-    const rootPath = base.replace(/\/$/, '') || '/';
-    const isNext = /\bnext\b/i.test(link.rel || '') || /^(?:next|next page|older posts|التالي|المزيد|الأقدم|الصفحة التالية|›|»|→)$/i.test(cleanText(link.text));
-    const isPage = (u.searchParams.has('page') || u.searchParams.has('paged') || /\/(?:page|paged)\/\d+\/?$/i.test(u.pathname));
-    if (!isNext && !isPage) continue;
-    if (!(pathname === rootPath || pathname.startsWith(rootPath + '/'))) continue;
-    if (u.href === current.href) continue;
-    return u.href;
+    let url;
+    try {
+      url = new URL(safePublicUrl(link.url));
+      if (!sameSite(url.href, root.href) || url.href === current.href || seen.has(url.href)) continue;
+    } catch { continue; }
+    const pathname = url.pathname.replace(/\/$/, '') || '/';
+    if (base !== '/' && pathname !== base && !pathname.startsWith(base+'/')) continue;
+    const rel = String(link.rel || '').toLowerCase();
+    const label = cleanText([link.text,link.ariaLabel,link.title,link.className,link.id].filter(Boolean).join(' '));
+    const explicit = /(?:^|\s)next(?:\s|$)/i.test(rel) ||
+      /\b(?:next(?:\s+page)?|load[\s_-]*more|show[\s_-]*more|view[\s_-]*more|more[\s_-]*(?:posts|articles|stories|results)|older[\s_-]*(?:posts|articles|stories|entries)|pagination[\s_-]*next)\b/i.test(label) ||
+      /(?:^|[\s_-])(?:next|loadmore|load_more|showmore)(?:$|[\s_-])/i.test(label) ||
+      /(?:الصفحة\s*التالية|المقالات\s*التالية|التالي|تحميل\s*المزيد|عرض\s*المزيد|المزيد|مقالات\s*أقدم|الأقدم|أقدم\s*المقالات)/i.test(label) ||
+      /[›»→⟶]/.test(label);
+    const previous = /(?:^|\s)prev(?:ious)?(?:\s|$)/i.test(rel) ||
+      /\b(?:prev(?:ious)?|newer[\s_-]*posts|back)\b/i.test(label) ||
+      /(?:السابق|الأحدث|رجوع|عودة)/i.test(label);
+    if(previous)continue;
+    const number=pageNumber(url);
+    if (number !== null && number <= currentNumber) continue;
+    if (!explicit && number === null) continue;
+    if (number === null && url.pathname === current.pathname && url.search === current.search)continue;
+    seen.add(url.href);
+    // Prefer an explicit next control, then the nearest larger page number.
+    const score = (/\bnext\b/i.test(rel)?100:explicit?70:25);
+    possible.push({url:url.href,score,delta:number===null?Number.MAX_SAFE_INTEGER:number-currentNumber});
   }
-  return null;
+  possible.sort((a,b)=>b.score-a.score || a.delta-b.delta);
+  return possible[0]?.url || null;
 }
 
 export function htmlDecodeLoose(value) {
