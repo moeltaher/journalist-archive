@@ -209,6 +209,8 @@ async function parsePage(html, pageUrl) {
         try { abs = new URL(href, pageUrl).href; } catch { return; }
         const ariaLabel = e.getAttribute('aria-label') || '';
         const linkTitle = e.getAttribute('title') || '';
+        const className = e.getAttribute('class') || '';
+        const elementId = e.getAttribute('id') || '';
         const fallbackTitle = ariaLabel || linkTitle;
         const state = {value:''};
         // This per-link closure captures nested span/strong text via the handler's text() below.
@@ -218,8 +220,8 @@ async function parsePage(html, pageUrl) {
           const i = this._stack.indexOf(state);
           if (i >= 0) this._stack.splice(i, 1);
           links.push({url:abs, text: cleanText(state.value) || cleanText(fallbackTitle),
-            rel, ariaLabel, title:linkTitle, className:e.getAttribute('class') || '',
-            id:e.getAttribute('id') || '', card:false});
+            rel, ariaLabel, title:linkTitle, className,
+            id:elementId, card:false});
         });
       },
       text(chunk) {
@@ -242,16 +244,17 @@ async function parsePage(html, pageUrl) {
         if (!candidate) return;
         let resolved;
         try { resolved = new URL(candidate, pageUrl).href; } catch { return; }
+        const ariaLabel = element.getAttribute('aria-label') || '';
+        const title = element.getAttribute('title') || '';
+        const className = element.getAttribute('class') || '';
+        const elementId = element.getAttribute('id') || '';
         const state = {text:''};
         active.push(state);
         element.onEndTag(() => {
           const at = active.indexOf(state);
           if (at >= 0) active.splice(at,1);
           links.push({url:resolved, text:cleanText(state.text),
-            ariaLabel:element.getAttribute('aria-label') || '',
-            title:element.getAttribute('title') || '',
-            className:element.getAttribute('class') || '',
-            id:element.getAttribute('id') || '', rel:'', card:false});
+            ariaLabel, title, className, id:elementId, rel:'', card:false});
         });
       },
       text(chunk) {
