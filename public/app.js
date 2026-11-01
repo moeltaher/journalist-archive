@@ -1,4 +1,4 @@
-import {buildDocx, safeFilename} from './docx.js';
+import {buildDocx, ARCHIVE_FILENAME} from './docx.js';
 import {makeReport, updateReportItem, storeReport, loadReport} from './archive-report.js';
 
 const $ = id => document.getElementById(id);
@@ -213,7 +213,7 @@ refs.word.addEventListener('click', async () => {
     const objectUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = objectUrl;
-    a.download = `${safeFilename(valid.length===1?valid[0].title:state.title)}.docx`;
+    a.download = ARCHIVE_FILENAME;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
     announce(`تم إنشاء ملف Word يضم ${valid.length} مقالًا${failed?`؛ تعذّر استخراج ${failed} مقالًا`:''}.`,'success');
