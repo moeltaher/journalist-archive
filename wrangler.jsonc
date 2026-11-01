@@ -2,6 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "journalist-archive",
   "main": "src/worker.js",
+  "workers_dev": true,
   "compatibility_date": "2026-10-31",
   "assets": {
     "directory": "./public",
