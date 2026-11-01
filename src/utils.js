@@ -101,7 +101,8 @@ export function paginationLink(links, currentUrl, rootUrl) {
     const found=/\/(?:page|paged)\/(\d+)\/?$/i.exec(url.pathname);
     return found ? Number(found[1]) : null;
   };
-  const currentNumber = pageNumber(current) ?? 0;
+  const sourceNumber = pageNumber(current);
+  const currentNumber = sourceNumber ?? 0;
   const possible = [];
   const seen = new Set();
   for (const link of links) {
@@ -124,7 +125,8 @@ export function paginationLink(links, currentUrl, rootUrl) {
       /(?:السابق|الأحدث|رجوع|عودة)/i.test(label);
     if(previous)continue;
     const number=pageNumber(url);
-    if (number !== null && number <= currentNumber) continue;
+    if (number !== null && sourceNumber !== null && number <= sourceNumber) continue;
+    if (number === 0 && sourceNumber === null && !explicit) continue;
     if (!explicit && number === null) continue;
     if (number === null && url.pathname === current.pathname && url.search === current.search)continue;
     seen.add(url.href);
