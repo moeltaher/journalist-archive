@@ -1,0 +1,13 @@
+{
+  "name": "journalist-archive",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mobile-first article archiving and Word export",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {"wrangler": "^4.135.0"}
+}

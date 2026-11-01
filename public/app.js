@@ -1,0 +1,246 @@
+import {buildDocx, safeFilename} from './docx.js';
+
+const $ = id => document.getElementById(id);
+const refs = {
+  form:$('lookup-form'), url:$('article-url'), mode:$('page-mode'),
+  analyze:$('analyze-btn'), results:$('results'), count:$('result-count'),
+  description:$('result-description'), list:$('article-list'), selectAll:$('select-all'),
+  selected:$('selected-count'), word:$('download-btn'), archive:$('archive-btn'),
+  note:$('archive-note'), manual:$('manual-archive'), progress:$('task-progress'),
+  notice:$('notification'), warnings:$('warnings')
+};
+const state = {articles:[], busy:false, iaConfigured:false, title:'مقالات', mode:'article', statusLoaded:false};
+
+function announce(message, type='info') {
+  refs.notice.hidden = false;
+  refs.notice.textContent = message;
+  refs.notice.className = `notification ${type}`;
+}
+function setProgress(message) {
+  refs.progress.hidden = !message;
+  refs.progress.textContent = message || '';
+}
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+function selectedItems() { return state.articles.filter(a => a.selected); }
+function updateButtons() {
+  const chosen = selectedItems();
+  refs.selected.textContent = `${chosen.length} محدد`;
+  refs.selectAll.checked = chosen.length > 0 && chosen.length === state.articles.length;
+  refs.selectAll.indeterminate = chosen.length > 0 && chosen.length < state.articles.length;
+  refs.word.disabled = state.busy || chosen.length === 0;
+  refs.archive.disabled = state.busy || chosen.length === 0 || !state.iaConfigured;
+  refs.analyze.disabled = state.busy;
+  refs.mode.disabled = state.busy;
+  refs.url.disabled = state.busy;
+  refs.selectAll.disabled = state.busy;
+  refs.list.querySelectorAll('input[type=checkbox]').forEach(input => { input.disabled=state.busy; });
+  if (!state.iaConfigured) {
+    refs.note.textContent = 'الأرشفة الآلية تحتاج إلى مفاتيح Internet Archive في إعدادات Cloudflare. يمكنك تنزيل Word الآن أو الحفظ يدويًا.';
+  } else {
+    refs.note.textContent = 'يُرسل كل رابط على حدة إلى Internet Archive، ويُتحقق من النتيجة. أبقِ الصفحة مفتوحة أثناء الأرشفة الجماعية.';
+  }
+  if (chosen.length === 1 && !state.iaConfigured) {
+    refs.manual.href = `https://web.archive.org/save/${chosen[0].url}`;
+    refs.manual.hidden = false;
+  } else refs.manual.hidden = true;
+}
+function setBusy(value) { state.busy = value; updateButtons(); }
+
+async function requestJSON(path, data) {
+  const res = await fetch(path, data ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)} : undefined);
+  let json;
+  try { json = await res.json(); } catch { throw new Error('لم يستجب الخادم ببيانات مفهومة.'); }
+  if (!res.ok) throw new Error(json?.error || `تعذّر تنفيذ الطلب (${res.status}).`);
+  return json;
+}
+
+function attachLink(parent, title, url) {
+  const a = document.createElement('a');
+  a.textContent = title;
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  parent.appendChild(a);
+  return a;
+}
+
+function renderItem(item) {
+  const row = document.createElement('div');
+  row.className = 'article-row';
+  const checked = document.createElement('input');
+  checked.type = 'checkbox'; checked.checked = item.selected;
+  checked.setAttribute('aria-label', `تحديد مقال: ${item.title}`);
+  checked.addEventListener('change', () => {item.selected=checked.checked;updateButtons();});
+  const information = document.createElement('div');
+  information.className = 'article-info';
+  const name = document.createElement('p'); name.className='article-title'; name.textContent=item.title;
+  const source = document.createElement('div'); source.className='article-source';
+  try { source.textContent = new URL(item.url).hostname + new URL(item.url).pathname; }
+  catch { source.textContent = item.url; }
+  const status = document.createElement('span'); status.className='article-status';
+  status.textContent=item.status || 'جاهز';
+  if (item.statusType) status.classList.add(item.statusType);
+  item.statusEl = status;
+  const links = document.createElement('div'); links.className='article-links';
+  attachLink(links, 'المقال الأصلي ↗', item.url);
+  item.linksEl = links;
+  information.append(name,source,status,links);
+  row.append(checked,information);
+  return row;
+}
+function updateItem(item, label, type, archiveUrl) {
+  item.status = label; item.statusType = type;
+  if (item.statusEl) {item.statusEl.textContent = label;item.statusEl.className = `article-status ${type || ''}`;}
+  if (archiveUrl && !item.archiveUrl && item.linksEl) {
+    item.archiveUrl = archiveUrl;
+    attachLink(item.linksEl, 'النسخة المؤرشفة ↗', archiveUrl);
+  }
+}
+
+function showResults(response) {
+  state.title = response.title || 'أرشيف مقالات';
+  state.mode = response.mode;
+  state.articles = response.articles.map(a => ({...a, selected:true, status:'جاهز'}));
+  refs.list.replaceChildren();
+  for (const item of state.articles) refs.list.appendChild(renderItem(item));
+  const n = state.articles.length;
+  refs.count.textContent = `${n} ${n===1?'مقال': 'مقال / رابط'}`;
+  refs.description.textContent = response.mode === 'article' ? 'تم التعرف على مقال واحد. اختر طريقة حفظه.' :
+    `هذه روابط مقالات مرشحة من صفحة الكاتب، بعد فحص ${response.scannedPages || 1} صفحة. راجع الاختيار قبل البدء؛ قد لا تشمل النتائج جميع المقالات.`;
+  refs.warnings.replaceChildren();
+  refs.warnings.hidden = !(response.warnings || []).length;
+  for (const warning of response.warnings || []) {
+    const p = document.createElement('p'); p.textContent=warning;refs.warnings.appendChild(p);
+  }
+  refs.results.hidden = false;
+  setProgress('');
+  updateButtons();
+  refs.results.scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+refs.form.addEventListener('submit', async event => {
+  event.preventDefault();
+  const url = refs.url.value.trim();
+  if (!url) return;
+  setBusy(true); announce('نجلب الصفحة ونبحث عن المقالات المنشورة فيها…');
+  refs.results.hidden = true;
+  try {
+    const result = await requestJSON('/api/inspect',{url,mode:refs.mode.value});
+    showResults(result);
+    announce(result.articles.length ? `تم العثور على ${result.articles.length} رابطًا. راجع القائمة ثم اختر تنزيل Word أو الأرشفة.` :
+      'اكتمل فحص الرابط، لكن لم نعثر على مقالات قابلة للاختيار.', result.articles.length?'success':'info');
+  } catch (error) { announce(error.message || 'تعذّر فحص الرابط.', 'error'); }
+  finally {setBusy(false);}
+});
+
+refs.selectAll.addEventListener('change', () => {
+  const checked = refs.selectAll.checked;
+  for (const item of state.articles) item.selected=checked;
+  refs.list.querySelectorAll('input[type=checkbox]').forEach(input=>{input.checked=checked;});
+  updateButtons();
+});
+
+refs.word.addEventListener('click', async () => {
+  const chosen = selectedItems();
+  if (!chosen.length) return;
+  setBusy(true); announce('بدأ استخراج النصوص لإنشاء ملف Word.');
+  const articles = new Array(chosen.length);
+  let cursor = 0, finished = 0, failed = 0;
+  const work = async () => {
+    while (cursor < chosen.length) {
+      const at = cursor++;
+      const item = chosen[at];
+      updateItem(item, 'جاري استخراج النص…', 'pending');
+      try {
+        const data = await requestJSON('/api/article',{url:item.url});
+        articles[at] = data;
+        updateItem(item, 'تم استخراج النص', 'success');
+      } catch (error) {
+        failed++;
+        updateItem(item, `تعذّر استخراج النص: ${error.message}`, 'fail');
+      }
+      finished++;
+      setProgress(`جاري تجهيز ملف Word — ${finished} من ${chosen.length} مقال`);
+    }
+  };
+  try {
+    await Promise.all(Array.from({length:Math.min(3,chosen.length)},work));
+    const valid = articles.filter(Boolean);
+    if (!valid.length) throw new Error('لم نتمكن من استخراج أي مقال. جرّب رابط مقال منفرد أو موقعًا آخر.');
+    const blob = buildDocx(valid);
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = `${safeFilename(valid.length===1?valid[0].title:state.title)}.docx`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    announce(`تم إنشاء ملف Word يضم ${valid.length} مقالًا${failed?`؛ تعذّر استخراج ${failed} مقالًا`:''}.`,'success');
+    setProgress(`تم تجهيز ملف Word (${valid.length} مقال).`);
+  } catch (error) {announce(error.message,'error');setProgress('');}
+  finally {setBusy(false);}
+});
+
+async function monitorArchive(item, jobId) {
+  for (let attempt=0; attempt<24; attempt++) {
+    await sleep(6000);
+    try {
+      const result = await requestJSON(`/api/archive-status?job=${encodeURIComponent(jobId)}`);
+      if (result.status==='success') {
+        updateItem(item,'نجحت الأرشفة'+(result.archiveUrl?' — الرابط متاح':' — يجري تحديث الرابط'),'success',result.archiveUrl);
+        return 'success';
+      }
+      if (result.status==='error') {
+        updateItem(item,`فشلت الأرشفة: ${result.message || 'رفضت الخدمة حفظ الصفحة'}`,'fail');
+        return 'error';
+      }
+    } catch (error) {
+      // A transient status error is not necessarily a failed capture.
+      if (attempt >= 23) break;
+    }
+  }
+  updateItem(item,'أُرسل الطلب، لكن لم يتأكد اكتمال الحفظ. راجعه لاحقًا في Wayback Machine.','pending');
+  return 'unconfirmed';
+}
+
+refs.archive.addEventListener('click', async () => {
+  const chosen = selectedItems();
+  if (!chosen.length || !state.iaConfigured) return;
+  setBusy(true);
+  announce('بدء إرسال المقالات إلى Wayback Machine. أبق هذه الصفحة مفتوحة أثناء العملية.');
+  let submitted=0, declined=0;
+  const tracks=[];
+  for (let i=0;i<chosen.length;i++) {
+    const item=chosen[i];
+    updateItem(item,'جاري إرسال طلب الأرشفة…','pending');
+    setProgress(`إرسال الطلب ${i+1} من ${chosen.length} — تم قبول ${submitted} طلبات`);
+    try {
+      const result=await requestJSON('/api/archive',{url:item.url});
+      submitted++;
+      updateItem(item,'تم إرسال الطلب، في انتظار تأكيد الحفظ…','pending');
+      tracks.push(monitorArchive(item,result.jobId));
+    } catch (error) {
+      declined++;
+      updateItem(item,`لم يُقبل الطلب: ${error.message}`,'fail');
+    }
+    if (i < chosen.length-1) await sleep(17_000);
+  }
+  setProgress(`أُرسل ${submitted} من ${chosen.length} طلبًا. يجري التحقق من نتيجة الحفظ…`);
+  const states = await Promise.all(tracks);
+  const success=states.filter(s => s==='success').length;
+  const notConfirmed=states.filter(s => s==='unconfirmed').length;
+  const failed=declined+states.filter(s => s==='error').length;
+  announce(`نجحت أرشفة ${success} مقالًا، وتعذّرت أرشفة ${failed}${notConfirmed?`، وتبقى ${notConfirmed} طلبًا دون تأكيد`:''}.`, failed||notConfirmed?'info':'success');
+  setProgress('اكتملت متابعة الطلبات. راجع حالة كل مقال وروابط النسخ المؤرشفة في القائمة.');
+  setBusy(false);
+});
+
+(async () => {
+  try {
+    const result=await requestJSON('/api/status');
+    state.iaConfigured=Boolean(result.archiveConfigured);
+  } catch {
+    // Word export and manual archiving remain available when status fails.
+  }
+  state.statusLoaded=true;
+  updateButtons();
+})();

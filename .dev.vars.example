@@ -1,0 +1,5 @@
+# Put real Internet Archive credentials in Cloudflare > Workers & Pages >
+# journalist-archive > Settings > Variables and Secrets, as type Secret.
+# Never add real keys to GitHub.
+IA_ACCESS_KEY=
+IA_SECRET_KEY=

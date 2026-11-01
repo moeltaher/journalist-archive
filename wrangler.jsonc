@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "journalist-archive",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-31",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "ratelimits": [
+    {"name": "INSPECT_LIMITER", "namespace_id": "195201", "simple": {"limit": 8, "period": 60}},
+    {"name": "ARTICLE_LIMITER", "namespace_id": "195202", "simple": {"limit": 120, "period": 60}},
+    {"name": "ARCHIVE_LIMITER", "namespace_id": "195203", "simple": {"limit": 4, "period": 60}}
+  ]
+}

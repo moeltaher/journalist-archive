@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f9fc">
+  <meta name="description" content="احفظ مقالاتك من رابط واحد: صدّرها إلى Word أو أرسلها للأرشفة في Wayback Machine.">
+  <title>أرشيف الصحفي | احفظ مقالاتك</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" type="module"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="الرئيسية - أرشيف الصحفي">
+        <span class="brand-icon" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="24" height="24" fill="none"><rect x="6" y="5" width="20" height="22" rx="3" stroke="currentColor" stroke-width="2"/><path d="M11 11h10M11 16h10M11 21h7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </span>
+        <span>أرشيف <b>الصحفي</b></span>
+      </a>
+      <span class="top-chip"><span class="dot"></span> أداة مجانية</span>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <span class="eyebrow"><span aria-hidden="true">✦</span> أرشفة مستقلة للمحتوى الصحفي</span>
+        <h1 id="hero-title">مقالاتك تستحق أن <span>تبقى.</span></h1>
+        <p>رابط واحد يكفي للبدء. أضف رابط مقال أو صفحة كاتب، ثم اختر تنزيل المقالات في ملف Word أو حفظ روابطها في Wayback Machine.</p>
+        <div class="hero-points" aria-label="مميزات التطبيق">
+          <span>✓ يدعم العربية</span><span>✓ يعمل على الهاتف</span><span>✓ بدون تسجيل دخول</span>
+        </div>
+      </section>
+
+      <section class="panel input-panel" aria-labelledby="start-heading">
+        <div class="section-heading"><div><span class="step-number">01</span><h2 id="start-heading">أضف رابط المحتوى</h2></div><span class="light-note">مقال أو صفحة كاتب</span></div>
+        <form id="lookup-form">
+          <label for="article-url">رابط المقال أو صفحة الكاتب</label>
+          <div class="input-wrap">
+            <span class="link-symbol" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7 .2l2.1-2.1a5 5 0 0 0-7.1-7.1L10.8 5.2"/><path d="M14 11a5 5 0 0 0-7-.2l-2.1 2.1a5 5 0 1 0 7.1 7.1l1.2-1.2"/></svg>
+            </span>
+            <input id="article-url" type="url" inputmode="url" dir="ltr" placeholder="https://example.com/author/name" autocomplete="url" required>
+          </div>
+          <div class="form-footer">
+            <div class="mode-wrap">
+              <label for="page-mode">نوع الرابط</label>
+              <select id="page-mode">
+                <option value="auto">تعرّف تلقائيًا</option>
+                <option value="article">مقال واحد</option>
+                <option value="author">صفحة كاتب</option>
+              </select>
+            </div>
+            <button class="btn btn-primary btn-analyze" id="analyze-btn" type="submit"><span class="btn-icon" aria-hidden="true">↖</span> استخرج المقالات</button>
+          </div>
+        </form>
+        <p class="form-hint">تعمل الأداة مع صفحات الويب العامة؛ بعض المواقع تمنع الاستخراج الآلي أو تعرض محتواها باستخدام JavaScript.</p>
+      </section>
+
+      <div id="notification" class="notification" role="status" aria-live="polite" hidden></div>
+
+      <section class="panel result-panel" id="results" aria-labelledby="result-heading" hidden>
+        <div class="section-heading result-header"><div><span class="step-number">02</span><h2 id="result-heading">المقالات المكتشفة</h2></div><span class="count-pill" id="result-count">0 مقال</span></div>
+        <p class="result-description" id="result-description"></p>
+        <div class="selection-toolbar">
+          <label class="check-all"><input type="checkbox" id="select-all" checked><span>تحديد الكل</span></label>
+          <span id="selected-count" class="selected-count">0 محدد</span>
+        </div>
+        <div id="article-list" class="article-list"></div>
+        <div class="warnings" id="warnings" hidden></div>
+        <div class="actions">
+          <button class="btn btn-word" id="download-btn" type="button"><span aria-hidden="true">↓</span><span>تنزيل ملف Word</span></button>
+          <button class="btn btn-archive" id="archive-btn" type="button"><span aria-hidden="true">◷</span><span>أرشفة في Wayback Machine</span></button>
+        </div>
+        <p class="archive-note" id="archive-note">يمكن تنزيل Word دون الحاجة إلى حساب. تتطلب الأرشفة الآلية تفعيل اتصال Internet Archive.</p>
+        <a id="manual-archive" class="manual-link" href="https://web.archive.org/save/" target="_blank" rel="noopener noreferrer" hidden>فتح Wayback للحفظ يدويًا ←</a>
+        <p class="progress" id="task-progress" role="status" aria-live="polite" hidden></p>
+      </section>
+
+      <section class="explainer" aria-label="كيف تعمل الخدمة">
+        <div class="explainer-title">خطوتان، وأرشيف أكثر استقرارًا.</div>
+        <div class="feature-grid">
+          <div class="feature-card"><div class="feature-icon icon-blue" aria-hidden="true">W</div><h3>نسخة قابلة للتحرير</h3><p>يجمع التطبيق المقالات المحددة في ملف Word واحد، مع عناوينها وروابط مصادرها وتنسيق عربي.</p></div>
+          <div class="feature-card"><div class="feature-icon icon-sand" aria-hidden="true">↗</div><h3>نسخة مؤرشفة على الويب</h3><p>يرسل الروابط إلى Wayback Machine، ويتابع نجاح حفظ كل صفحة بصورة منفصلة.</p></div>
+        </div>
+      </section>
+    </main>
+    <footer><p>مشروع مفتوح المصدر لحفظ العمل الصحفي. المحتوى يبقى ملكًا لأصحابه، ولا نخزّن نصوص المقالات على خادمنا.</p><a href="https://github.com/moeltaher/journalist-archive" target="_blank" rel="noopener noreferrer">المشروع على GitHub ↗</a></footer>
+  </div>
+</body>
+</html>
