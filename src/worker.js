@@ -3,6 +3,7 @@ import {
   paginationLink, htmlDecodeLoose, normalizeDate
 } from './utils.js';
 export {ArchiveQuota} from './archive-quota.js';
+import {issueInspectTicket, validateInspectTicket} from './inspect-auth.js';
 import {readAuthorCursor, takeAuthorCandidates, MAX_AUTHOR_CANDIDATES_PER_PAGE} from './author-pages.js';
 
 const MAX_PAGE_BYTES = 2_600_000;
@@ -434,7 +435,7 @@ function checkedUrls(urls) {
   if (new Set(clean).size !== clean.length) throw new ApiError('احذف الروابط المكررة من دفعة الأرشفة.', 422);
   return clean;
 }
-async function verifyTurnstile(token, request, env) {
+async function verifyTurnstile(token, request, env, action = 'archive') {
   if (!env.TURNSTILE_SITE_KEY || !env.TURNSTILE_SECRET_KEY) {
     throw new ApiError('لم يتم إعداد مفاتيح Turnstile في Production.', 503);
   }
@@ -459,7 +460,7 @@ async function verifyTurnstile(token, request, env) {
   try { result = await response.json(); }
   catch { throw new ApiError('استجابة Turnstile غير مفهومة.', 502); }
   if (result?.success !== true ||
-      result.hostname !== new URL(request.url).hostname || result.action !== 'archive') {
+      result.hostname !== new URL(request.url).hostname || result.action !== action) {
     throw new ApiError('لم ينجح التحقق الأمني. أعد الضغط على زر الأرشفة لإجراء تحقق جديد.', 403);
   }
 }
@@ -564,6 +565,12 @@ export default {
       if (incomingOrigin && incomingOrigin !== new URL(request.url).origin) throw new ApiError('طلبات النطاقات الأخرى غير مسموحة.', 403);
       if (request.headers.get('Sec-Fetch-Site') === 'cross-site') throw new ApiError('الطلبات الخارجية غير مسموحة.',403);
       const payload = await parseBody(request);
+      if (path === '/api/inspect-authorize') {
+        await checkRate(env.INSPECT_LIMITER, request);
+        const source = safePublicUrl(payload.url);
+        await verifyTurnstile(payload.token, request, env, 'inspect');
+        return json(await issueInspectTicket(env.TURNSTILE_SECRET_KEY,request,source));
+      }
       if (path === '/api/archive-status') {
         await checkRate(env.ARTICLE_LIMITER, request);
         const url=safePublicUrl(payload.url);
@@ -579,11 +586,13 @@ export default {
       const url = safePublicUrl(payload.url);
       if (path === '/api/inspect') {
         await checkRate(env.INSPECT_LIMITER, request);
+        if (!await validateInspectTicket(env.TURNSTILE_SECRET_KEY,request,payload.accessTicket,url,'inspect')) throw new ApiError('تحقق Turnstile مطلوب لاستخراج المقالات.',403);
         const mode = ['auto','article','author'].includes(payload.mode) ? payload.mode : 'auto';
         return json(await inspect(url, mode, payload.cursor || null));
       }
       if (path === '/api/article') {
         await checkRate(env.ARTICLE_LIMITER, request);
+        if (!await validateInspectTicket(env.TURNSTILE_SECRET_KEY,request,payload.accessTicket,url,'article')) throw new ApiError('انتهت صلاحية تصريح استخراج المقالات. أعد التحقق.',403);
         return json(await extractedArticle(url));
       }
       if (path === '/api/archive') {
