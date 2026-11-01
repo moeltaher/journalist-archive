@@ -3,6 +3,7 @@ import {
   paginationLink, htmlDecodeLoose, normalizeDate
 } from './utils.js';
 export {ArchiveQuota} from './archive-quota.js';
+import {readAuthorCursor, takeAuthorCandidates, MAX_AUTHOR_CANDIDATES_PER_PAGE} from './author-pages.js';
 
 const MAX_PAGE_BYTES = 2_600_000;
 const MAX_AUTHOR_PAGES = 4;
@@ -229,49 +230,72 @@ function isArticle(page) {
   return page.structured || /article/i.test(page.ogType) || (count >= 3 && words >= 650);
 }
 
-async function inspect(url, mode) {
-  const first = await downloadHtml(url);
+async function inspect(url, mode, cursor = null) {
+  const rootUrl = safePublicUrl(url);
+  let position;
+  try { position = readAuthorCursor(cursor, rootUrl); }
+  catch (error) { throw new ApiError(error.message || 'موضع استكمال الأرشفة غير صالح.', 422); }
+
+  const first = await downloadHtml(position.pageUrl);
   const page = await parsePage(first.html, first.url);
-  let type = mode === 'article' || mode === 'author' ? mode : isAuthorPath(first.url) ? 'author' :
+  const type = cursor ? 'author' : mode === 'article' || mode === 'author' ? mode : isAuthorPath(first.url) ? 'author' :
     (page.structured || /article/i.test(page.ogType)) ? 'article' :
     pickArticles(page.links, first.url).length >= 4 ? 'author' : isArticle(page) ? 'article' :
     pickArticles(page.links, first.url).length >= 2 ? 'author' : 'article';
 
   if (type === 'article') {
-    return {mode:'article', title:page.title, scannedPages:1,
-      articles:[{url: first.url, title: page.title, author: page.author, date: page.date}],
-      warnings: page.blocks.reduce((sum, b) => sum + b.text.length, 0) < 80 ?
+    return {mode:'article', title:page.title, scannedPages:1, nextCursor:null,
+      articles:[{url:first.url, title:page.title, author:page.author, date:page.date}],
+      warnings:page.blocks.reduce((sum,b)=>sum+b.text.length,0)<80 ?
         ['لم نتأكد من إمكانية استخراج النص الكامل؛ يمكنك تجربة تنزيل Word لمعرفة النتيجة.'] : []};
   }
 
-  const results = new Map();
-  let count = 0, next = first.url;
-  const visited = new Set(), warnings = [];
+  const results = new Map(), visited = new Set(), warnings = [];
+  let count = 0, next = first.url, offset = position.offset, nextCursor = null;
   while (next && count < MAX_AUTHOR_PAGES && results.size < MAX_ARTICLES) {
-    if (visited.has(next)) break;
+    if (visited.has(next)) {
+      warnings.push('رصدنا تكرارًا في روابط صفحات الكاتب، ولذلك أوقفنا تتبع الصفحات لتجنب الدوران.');
+      nextCursor = null;
+      break;
+    }
     visited.add(next);
     let current;
     if (count === 0) current = page;
     else {
       try {
-        const second = await downloadHtml(next);
-        current = await parsePage(second.html, second.url);
+        const fetched = await downloadHtml(next);
+        current = await parsePage(fetched.html, fetched.url);
       } catch {
-        warnings.push('تعذر الوصول إلى إحدى صفحات القائمة؛ قد تكون النتائج غير مكتملة.');
+        warnings.push('تعذر فتح إحدى صفحات الكاتب. يمكنك استكمال البحث لاحقًا.');
+        nextCursor = {pageUrl:next, offset:0};
         break;
       }
     }
     count++;
-    for (const item of pickArticles(current.links, first.url, MAX_ARTICLES)) {
+    const candidates = pickArticles(current.links, rootUrl, MAX_AUTHOR_CANDIDATES_PER_PAGE);
+    const portion = takeAuthorCandidates(candidates, offset, MAX_ARTICLES-results.size);
+    for (const item of portion.articles) {
       if (!results.has(item.url)) results.set(item.url, item);
-      if (results.size >= MAX_ARTICLES) break;
     }
-    next = paginationLink(current.links, current.url, first.url);
+    if (portion.hasMoreOnPage) {
+      nextCursor = {pageUrl:current.url, offset:portion.nextOffset};
+      break;
+    }
+
+    const pageAfter = paginationLink(current.links, current.url, rootUrl);
+    offset = 0;
+    if (!pageAfter || visited.has(pageAfter)) {
+      if (pageAfter) warnings.push('رصدنا رابط صفحة مكررًا وتوقف استكشاف القائمة لتجنب الدوران.');
+      nextCursor = null;
+      break;
+    }
+    next = pageAfter;
+    nextCursor = {pageUrl:pageAfter, offset:0};
   }
-  if (results.size >= MAX_ARTICLES) warnings.push(`عُرض أول ${MAX_ARTICLES} رابطًا مرشحًا فقط؛ قد توجد مقالات إضافية.`);
-  else if (count === MAX_AUTHOR_PAGES && next) warnings.push(`تم فحص ${MAX_AUTHOR_PAGES} صفحات من قائمة الكاتب فقط؛ قد توجد صفحات أخرى.`);
-  if (!results.size) warnings.push('لم نعثر على روابط مقالات واضحة في هذه الصفحة. ربما يحمل الموقع القائمة باستخدام JavaScript أو يغيّر بنيتها.');
-  return {mode:'author', title:page.title, articles:[...results.values()], scannedPages:count, warnings};
+  if (nextCursor) warnings.push('تتوفر صفحات أو مقالات إضافية. اضغط «عرض المقالات التالية» لاستكمال الاكتشاف.');
+  if (!results.size) warnings.push('لم نعثر على روابط مقالات جديدة في الصفحات المفحوصة. ربما يعتمد الموقع على JavaScript أو بنية مختلفة.');
+  return {mode:'author', title:cursor ? null : page.title, articles:[...results.values()],
+    scannedPages:count, nextCursor, warnings};
 }
 
 async function extractedArticle(url) {
@@ -481,7 +505,7 @@ export default {
       if (path === '/api/inspect') {
         await checkRate(env.INSPECT_LIMITER, request);
         const mode = ['auto','article','author'].includes(payload.mode) ? payload.mode : 'auto';
-        return json(await inspect(url, mode));
+        return json(await inspect(url, mode, payload.cursor || null));
       }
       if (path === '/api/article') {
         await checkRate(env.ARTICLE_LIMITER, request);
