@@ -79,6 +79,11 @@ function displayItem(item, success) {
 }
 
 function init() {
+  try {
+    const progress=JSON.parse(localStorage.getItem('journalist-archive-progress-v2')||'null');
+    const next=$('continue-next');
+    if(next&&progress?.source&&progress?.nextCursor)next.hidden=false;
+  }catch{}
   if (!report) {
     $('report-empty').hidden = false;
     return;
