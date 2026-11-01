@@ -10,6 +10,17 @@ const refs = {
   note:$('archive-note'), manual:$('manual-archive'), progress:$('task-progress'),
   notice:$('notification'), warnings:$('warnings'), previous:$('previous-report'), next:$('next-batch')
 };
+// Always provide a working Next button, including when cached HTML lacks the element.
+if (!refs.next && refs.warnings) {
+  refs.next = document.createElement('button');
+  refs.next.id = 'next-batch';
+  refs.next.type = 'button';
+  refs.next.hidden = true;
+}
+if (refs.next) {
+  refs.next.classList.add('btn', 'btn-primary', 'next-batch-button');
+  refs.next.textContent = 'عرض المقالات التالية ←';
+}
 const state = {articles:[], busy:false, iaConfigured:false, archiveState:'checking', title:'مقالات', mode:'article', statusLoaded:false,turnstileConfigured:false};
 let activeReport = null;
 let archiveCheck = null;
@@ -60,7 +71,10 @@ function updateButtons() {
   refs.word.disabled = state.busy || chosen.length === 0;
   refs.archive.disabled = state.busy || chosen.length === 0;
   refs.analyze.disabled = state.busy;
-  if(refs.next){refs.next.hidden=state.mode!=='author'||!stateProgress.nextCursor;refs.next.disabled=state.busy;}
+  if (refs.next) {
+    refs.next.hidden = state.mode !== 'author' || !stateProgress.nextCursor;
+    refs.next.disabled = state.busy;
+  }
   refs.mode.disabled = state.busy;
   refs.url.disabled = state.busy;
   refs.selectAll.disabled = state.busy;
@@ -188,10 +202,15 @@ function showResults(response) {
   refs.description.textContent = response.mode === 'article' ? 'تم التعرف على مقال واحد. اختر طريقة حفظه.' :
     `هذه مجموعة من مقالات الكاتب (فُحصت ${response.scannedPages||1} صفحات). المقالات المحفوظة سابقًا غير محددة تلقائيًا. ${response.nextCursor?'توجد مقالات أخرى؛ استخدم زر «عرض المقالات التالية».':'لم يُكتشف رابط صفحة تالية.'}`;
   refs.warnings.replaceChildren();
-  refs.warnings.hidden = !(response.warnings || []).length;
   for (const warning of response.warnings || []) {
     const p = document.createElement('p'); p.textContent=warning;refs.warnings.appendChild(p);
   }
+  // Put the real action directly beneath the notice about more articles.
+  if (refs.next) {
+    refs.next.hidden = response.mode !== 'author' || !response.nextCursor;
+    refs.warnings.appendChild(refs.next);
+  }
+  refs.warnings.hidden = !(response.warnings || []).length && !response.nextCursor;
   refs.results.hidden = false;
   setProgress('');
   updateButtons();
