@@ -289,6 +289,116 @@ async function checkRate(binding, request) {
   if (!success) throw new ApiError('طلبات كثيرة في وقت قصير. حاول مجددًا بعد دقيقة.', 429);
 }
 
+
+// A Turnstile token is one-time and lasts five minutes. After Siteverify succeeds,
+// issue a short-lived, signed permission for the exact selected article URLs.
+// The existing IP rate limiter remains necessary: these tickets are not single-use.
+const MAX_ARCHIVE_BATCH = 45;
+const ARCHIVE_TICKET_MS = 30 * 60 * 1000;
+const cryptoEncoder = new TextEncoder();
+const cryptoDecoder = new TextDecoder();
+const TURNSTILE_VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+
+function encodeUrlSafe(bytes) {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+function decodeUrlSafe(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error('Invalid signed value');
+  const encoded = value.replace(/-/g, '+').replace(/_/g, '/');
+  return Uint8Array.from(atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, '=')), char => char.charCodeAt(0));
+}
+async function ticketKey(env) {
+  if (typeof env.TURNSTILE_SECRET_KEY !== 'string' || env.TURNSTILE_SECRET_KEY.length < 12) {
+    throw new ApiError('لم تُضبط بيانات حماية Turnstile بصورة صحيحة.', 503);
+  }
+  return crypto.subtle.importKey('raw', cryptoEncoder.encode(env.TURNSTILE_SECRET_KEY),
+    {name:'HMAC',hash:'SHA-256'}, false, ['sign','verify']);
+}
+async function urlDigest(url) {
+  return encodeUrlSafe(new Uint8Array(await crypto.subtle.digest('SHA-256', cryptoEncoder.encode(url))));
+}
+async function clientDigest(key, request) {
+  // Bind to this browser and network without putting an IP address into the ticket.
+  const ip = request.headers.get('CF-Connecting-IP') || '';
+  const agent = request.headers.get('User-Agent') || '';
+  const bytes = await crypto.subtle.sign('HMAC', key, cryptoEncoder.encode('archive-client-v1|' + ip + '|' + agent));
+  return encodeUrlSafe(new Uint8Array(bytes)).slice(0, 32);
+}
+function checkedUrls(urls) {
+  if (!Array.isArray(urls) || !urls.length || urls.length > MAX_ARCHIVE_BATCH) {
+    throw new ApiError('يمكن اعتماد دفعة تحتوي على 1 إلى 45 رابطًا فقط.', 422);
+  }
+  const clean = urls.map(safePublicUrl);
+  if (new Set(clean).size !== clean.length) throw new ApiError('احذف الروابط المكررة من دفعة الأرشفة.', 422);
+  return clean;
+}
+async function verifyTurnstile(token, request, env) {
+  if (!env.TURNSTILE_SITE_KEY || !env.TURNSTILE_SECRET_KEY) {
+    throw new ApiError('لم يتم إعداد مفاتيح Turnstile في Production.', 503);
+  }
+  if (typeof token !== 'string' || token.length < 8 || token.length > 2048) {
+    throw new ApiError('رمز التحقق الأمني غير صالح. أعد المحاولة.', 403);
+  }
+  const body = {
+    secret: env.TURNSTILE_SECRET_KEY,
+    response: token,
+    remoteip: request.headers.get('CF-Connecting-IP') || undefined
+  };
+  let response;
+  try {
+    response = await fetch(TURNSTILE_VERIFY_URL, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+    });
+  } catch {
+    throw new ApiError('تعذّر الاتصال بخدمة Turnstile. حاول مجددًا.', 502);
+  }
+  if (!response.ok) throw new ApiError('تعذّر التحقق من حماية Turnstile. حاول مجددًا.', 502);
+  let result;
+  try { result = await response.json(); }
+  catch { throw new ApiError('استجابة Turnstile غير مفهومة.', 502); }
+  if (result?.success !== true ||
+      result.hostname !== new URL(request.url).hostname || result.action !== 'archive') {
+    throw new ApiError('لم ينجح التحقق الأمني. أعد الضغط على زر الأرشفة لإجراء تحقق جديد.', 403);
+  }
+}
+async function issueArchiveTicket(request, env, urls) {
+  const key = await ticketKey(env);
+  const payload = {
+    v:1, expires:Date.now() + ARCHIVE_TICKET_MS,
+    origin:new URL(request.url).origin,
+    client:await clientDigest(key, request),
+    urls:await Promise.all(urls.map(urlDigest))
+  };
+  const encoded = encodeUrlSafe(cryptoEncoder.encode(JSON.stringify(payload)));
+  const content = cryptoEncoder.encode('journalist-archive-ticket-v1|' + encoded);
+  const signature = encodeUrlSafe(new Uint8Array(await crypto.subtle.sign('HMAC', key, content)));
+  return {ticket:encoded + '.' + signature, expiresAt:new Date(payload.expires).toISOString()};
+}
+async function requireArchiveTicket(ticket, url, request, env) {
+  if (typeof ticket !== 'string' || ticket.length > 6500 ||
+      !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(ticket)) {
+    throw new ApiError('يجب إكمال تحقق Turnstile قبل الأرشفة.', 403);
+  }
+  try {
+    const [encoded,signature] = ticket.split('.');
+    const key = await ticketKey(env);
+    const valid = await crypto.subtle.verify('HMAC',key,decodeUrlSafe(signature),
+      cryptoEncoder.encode('journalist-archive-ticket-v1|' + encoded));
+    if (!valid) throw new Error('signature');
+    const data = JSON.parse(cryptoDecoder.decode(decodeUrlSafe(encoded)));
+    if (data?.v !== 1 || !Number.isFinite(data.expires) || data.expires <= Date.now() ||
+        data.expires > Date.now() + ARCHIVE_TICKET_MS ||
+        data.origin !== new URL(request.url).origin ||
+        data.client !== await clientDigest(key,request) ||
+        !Array.isArray(data.urls) || data.urls.length < 1 || data.urls.length > MAX_ARCHIVE_BATCH ||
+        !data.urls.includes(await urlDigest(url))) throw new Error('expired or unauthorized URL');
+  } catch {
+    throw new ApiError('انتهت صلاحية تصريح الأرشفة أو تغيّر اتصالك. أعد التحقق من Turnstile.', 403);
+  }
+}
+
 function archiveHeaders(env) {
   return {'Accept':'application/json', 'Authorization':`LOW ${env.IA_ACCESS_KEY}:${env.IA_SECRET_KEY}`};
 }
@@ -331,7 +441,12 @@ export default {
     const path = new URL(request.url).pathname;
     if (!path.startsWith('/api/')) return env.ASSETS.fetch(request);
     try {
-      if (path === '/api/status' && request.method === 'GET') return json({version:'0.1.0', archiveConfigured:Boolean(env.IA_ACCESS_KEY && env.IA_SECRET_KEY)});
+      if (path === '/api/status' && request.method === 'GET') return json({
+        version:'0.2.0',
+        archiveConfigured:Boolean(env.IA_ACCESS_KEY && env.IA_SECRET_KEY),
+        turnstileConfigured:Boolean(env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET_KEY),
+        turnstileSiteKey:env.TURNSTILE_SITE_KEY || ''
+      });
       if (path === '/api/archive-status' && request.method === 'GET') {
         await checkRate(env.ARTICLE_LIMITER, request);
         return json(await archiveStatus(new URL(request.url).searchParams.get('job') || '', env));
@@ -340,6 +455,12 @@ export default {
       const incomingOrigin = request.headers.get('Origin');
       if (incomingOrigin && incomingOrigin !== new URL(request.url).origin) throw new ApiError('طلبات النطاقات الأخرى غير مسموحة.', 403);
       const payload = await parseBody(request);
+      if (path === '/api/archive-authorize') {
+        await checkRate(env.INSPECT_LIMITER, request);
+        const urls = checkedUrls(payload.urls);
+        await verifyTurnstile(payload.token, request, env);
+        return json(await issueArchiveTicket(request, env, urls));
+      }
       const url = safePublicUrl(payload.url);
       if (path === '/api/inspect') {
         await checkRate(env.INSPECT_LIMITER, request);
@@ -352,6 +473,7 @@ export default {
       }
       if (path === '/api/archive') {
         await checkRate(env.ARCHIVE_LIMITER, request);
+        await requireArchiveTicket(payload.ticket, url, request, env);
         return json(await submitArchive(url, env));
       }
       throw new ApiError('العنوان المطلوب غير موجود.', 404);
