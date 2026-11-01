@@ -140,3 +140,6 @@ footer a{text-decoration:none;color:var(--blue);white-space:nowrap}
  .report-bottom{flex-direction:column;align-items:stretch;margin-bottom:45px}
  .report-bottom .btn{width:100%}
 }
+
+/* Author pagination action is always visible within the yellow notice when more pages exist. */
+.warnings .next-batch-button{display:flex;width:100%;margin-top:12px;min-height:50px}
