@@ -21,7 +21,7 @@ if (refs.next) {
   refs.next.classList.add('btn', 'btn-primary', 'next-batch-button');
   refs.next.textContent = 'عرض المقالات التالية ←';
 }
-const state = {articles:[], busy:false, iaConfigured:false, archiveState:'checking', title:'مقالات', mode:'article', statusLoaded:false,turnstileConfigured:false};
+const state = {articles:[], busy:false, iaConfigured:false, archiveState:'checking', title:'مقالات', mode:'article', statusLoaded:false,turnstileConfigured:false,turnstileSiteConfigured:false,turnstileSecretConfigured:false};
 let activeReport = null;
 let archiveCheck = null;
 const PROGRESS_KEY = 'journalist-archive-progress-v2';
@@ -43,7 +43,14 @@ function renderTurnstile() {
   });
 }
 async function getTurnstileToken(action='archive') {
-  if (!state.turnstileConfigured) throw new Error('مفاتيح Turnstile ليست متاحة على الخادم.');
+  if (!state.turnstileConfigured || !turnstileSiteKey) {
+    await refreshArchiveAvailability({silent:true});
+  }
+  if (!state.turnstileConfigured) {
+    if (!state.turnstileSiteConfigured) throw new Error('المفتاح العام TURNSTILE_SITE_KEY غير متاح في النسخة المنشورة. تحقق من آخر Deployment.');
+    if (!state.turnstileSecretConfigured) throw new Error('المفتاح السري TURNSTILE_SECRET_KEY غير متاح في Production. أعد تفعيله كـ Secret من Cloudflare.');
+    throw new Error('تعذّر تفعيل Turnstile على الخادم. تحقق من إعدادات Production.');
+  }
   for(let i=0;i<40&&turnstileWidgetId===null;i++){if(window.turnstile)turnstileReady=true;renderTurnstile();if(turnstileWidgetId!==null)break;await sleep(250);}
   if(turnstileWidgetId===null)throw new Error('لم يُحمّل Turnstile. قد يكون المتصفح يمنع سكربت التحقق.');
   return new Promise((resolve,reject)=>{
@@ -141,6 +148,8 @@ async function refreshArchiveAvailability({silent=false}={}) {
       const result = await requestJSON('/api/status');
       state.iaConfigured = Boolean(result.archiveConfigured);
       state.turnstileConfigured = Boolean(result.turnstileConfigured);
+      state.turnstileSiteConfigured = Boolean(result.turnstileSiteConfigured ?? result.turnstileSiteKey);
+      state.turnstileSecretConfigured = Boolean(result.turnstileSecretConfigured ?? result.turnstileConfigured);
       if (result.turnstileSiteKey && result.turnstileSiteKey !== turnstileSiteKey) {
         turnstileSiteKey = result.turnstileSiteKey;
         renderTurnstile();

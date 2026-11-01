@@ -60,5 +60,9 @@
         "ArchiveQuota"
       ]
     }
-  ]
+  ],
+  "keep_vars": true,
+  "vars": {
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAFvx8R04Xvqa0xH7"
+  }
 }

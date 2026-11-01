@@ -558,6 +558,8 @@ export default {
         version:'0.2.0',
         archiveConfigured:Boolean(env.IA_ACCESS_KEY && env.IA_SECRET_KEY),
         turnstileConfigured:Boolean(env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET_KEY),
+        turnstileSiteConfigured:Boolean(env.TURNSTILE_SITE_KEY),
+        turnstileSecretConfigured:Boolean(env.TURNSTILE_SECRET_KEY),
         turnstileSiteKey:env.TURNSTILE_SITE_KEY || ''
       });
       if (request.method !== 'POST') throw new ApiError('هذه العملية غير مدعومة.', 405);
