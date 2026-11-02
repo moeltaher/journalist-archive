@@ -1,6 +1,7 @@
 import {buildDocx, ARCHIVE_FILENAME} from './docx.js';
 import {makeReport, updateReportItem, storeReport, loadReport} from './archive-report.js';
 import {TurnstileController} from './turnstile-controller.js';
+import {AccessSession} from './access-session.js';
 
 const $ = id => document.getElementById(id);
 const refs = {
@@ -36,12 +37,19 @@ const turnstileController = new TurnstileController({
   getApi:() => window.turnstile,
   locate:id => document.getElementById(id)
 });
-let inspectAccess = null, inspectPending = null;
+const inspectSession = new AccessSession({
+  ticketField:'accessTicket', errorCode:'INSPECT_AUTH_REQUIRED', request:requestJSON,
+  authorize:async source => {
+    const token = await getTurnstileToken('inspect');
+    const result = await requestJSON('/api/inspect-authorize',{url:source,token});
+    return {ticket:result.accessTicket,expiresAt:result.expiresAt};
+  }
+});
 
 async function getTurnstileToken(action='archive') {
-  if (!state.statusLoaded || !state.turnstileConfigured || !turnstileSiteKey) {
-    await refreshArchiveAvailability({silent:true});
-  }
+  // Re-read configuration when renewing, including after a deployment/key change.
+  await refreshArchiveAvailability({silent:true});
+  if (state.archiveState === 'error') throw new Error('تعذّر فحص إعدادات التحقق على الخادم. تحقق من الاتصال ثم أعد المحاولة.');
   if (!state.turnstileConfigured) {
     if (!state.turnstileSiteConfigured) throw new Error('المفتاح العام TURNSTILE_SITE_KEY غير متاح في النسخة المنشورة.');
     if (!state.turnstileSecretConfigured) throw new Error('المفتاح السري TURNSTILE_SECRET_KEY غير متاح في Production.');
@@ -54,18 +62,6 @@ async function getTurnstileToken(action='archive') {
   return turnstileController.execute(action);
 }
 
-async function accessFor(source) {
-  if (inspectAccess?.source===source && Date.now()<inspectAccess.expiry-60000) return inspectAccess.ticket;
-  if (inspectPending) return inspectPending;
-  inspectPending=(async()=>{
-    const token=await getTurnstileToken('inspect');
-    const response=await requestJSON('/api/inspect-authorize',{url:source,token});
-    if(!response.accessTicket)throw new Error('لم يصدر تصريح استخراج المقالات.');
-    inspectAccess={source,ticket:response.accessTicket,expiry:Date.parse(response.expiresAt)};
-    return response.accessTicket;
-  })();
-  try{return await inspectPending;}finally{inspectPending=null;}
-}
 function announce(message, type='info') {
   refs.notice.hidden = false;
   refs.notice.textContent = message;
@@ -94,13 +90,13 @@ function updateButtons() {
   refs.selectAll.disabled = state.busy;
   refs.list.querySelectorAll('input[type=checkbox]').forEach(input => { input.disabled=state.busy; });
   if (state.archiveState === 'ready') {
-    refs.note.textContent = 'الاتصال مُفعّل. عند الضغط على زر الأرشفة سنعيد التحقق ثم نرسل الروابط إلى Internet Archive.';
+    refs.note.textContent = 'مفاتيح الأرشفة مضبوطة على الخادم. يتأكد قبول Internet Archive للطلب عند إرساله بعد التحقق الأمني.';
   } else if (state.archiveState === 'checking') {
-    refs.note.textContent = 'نجري التحقق من اتصال Internet Archive. يمكنك الضغط على زر الأرشفة لإعادة التحقق.';
+    refs.note.textContent = 'نفحص إعدادات الأرشفة على الخادم. يمكنك الضغط على زر الأرشفة لإعادة الفحص.';
   } else if (state.archiveState === 'missing') {
     refs.note.textContent = 'لا يرى التطبيق مفاتيح Internet Archive في النسخة المنشورة حاليًا. اضغط على زر الأرشفة لإعادة التحقق، أو راجع أسرار Production والنشر في Cloudflare.';
   } else {
-    refs.note.textContent = 'تعذّر فحص اتصال Internet Archive. اضغط على زر الأرشفة لإعادة المحاولة؛ يمكن تنزيل Word بصورة مستقلة.';
+    refs.note.textContent = 'تعذّر فحص إعدادات الأرشفة. اضغط على زر الأرشفة لإعادة المحاولة؛ يمكن تنزيل Word بصورة مستقلة.';
   }
   if (chosen.length === 1 && !state.iaConfigured) {
     refs.manual.href = `https://web.archive.org/save/${chosen[0].url}`;
@@ -120,7 +116,12 @@ async function requestJSON(path, data) {
   const res = await fetch(path, data ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)} : {cache:'no-store'});
   let json;
   try { json = await res.json(); } catch { throw new Error('لم يستجب الخادم ببيانات مفهومة.'); }
-  if (!res.ok) throw new Error(json?.error || `تعذّر تنفيذ الطلب (${res.status}).`);
+  if (!res.ok) {
+    const error = new Error(json?.error || `تعذّر تنفيذ الطلب (${res.status}).`);
+    error.status = res.status;
+    error.code = json?.code;
+    throw error;
+  }
   return json;
 }
 
@@ -135,8 +136,8 @@ async function refreshArchiveAvailability({silent=false}={}) {
       state.turnstileConfigured = Boolean(result.turnstileConfigured);
       state.turnstileSiteConfigured = Boolean(result.turnstileSiteConfigured ?? result.turnstileSiteKey);
       state.turnstileSecretConfigured = Boolean(result.turnstileSecretConfigured ?? result.turnstileConfigured);
-      if (result.turnstileSiteKey && result.turnstileSiteKey !== turnstileSiteKey) {
-        turnstileSiteKey = result.turnstileSiteKey;
+      if ((result.turnstileSiteKey || '') !== turnstileSiteKey) {
+        turnstileSiteKey = result.turnstileSiteKey || '';
         turnstileController.setSiteKey(turnstileSiteKey);
       }
       state.archiveState = state.iaConfigured ? 'ready' : 'missing';
@@ -236,14 +237,14 @@ function showResults(response) {
 
 refs.form.addEventListener('submit', async event => {
   event.preventDefault();
+  if (state.busy) return;
   const url = refs.url.value.trim();
   if (!url) return;
   if(stateProgress.source!==url){stateProgress.source=url;stateProgress.nextCursor=null;stateProgress.archived={};saveProgress();}
   setBusy(true); announce('نجلب الصفحة ونبحث عن المقالات المنشورة فيها…');
   refs.results.hidden = true;
   try {
-    const accessTicket=await accessFor(url);
-    const result = await requestJSON('/api/inspect',{url,mode:refs.mode.value,accessTicket});
+    const result = await inspectSession.request(url,'/api/inspect',{url,mode:refs.mode.value});
     showResults(result);
     announce(result.articles.length ? `تم العثور على ${result.articles.length} رابطًا. راجع القائمة ثم اختر تنزيل Word أو الأرشفة.` :
       'اكتمل فحص الرابط، لكن لم نعثر على مقالات قابلة للاختيار.', result.articles.length?'success':'info');
@@ -257,8 +258,7 @@ if(refs.next) refs.next.addEventListener('click', async () => {
   announce('جاري استخراج المجموعة التالية من مقالات الكاتب…');
   const cursor=stateProgress.nextCursor;
   try {
-    const accessTicket=await accessFor(stateProgress.source);
-    const result=await requestJSON('/api/inspect',{url:stateProgress.source,mode:'author',cursor,accessTicket});
+    const result=await inspectSession.request(stateProgress.source,'/api/inspect',{url:stateProgress.source,mode:'author',cursor});
     showResults(result);
     announce('تم تحميل المجموعة التالية. المقالات المؤرشفة سابقًا غير محددة تلقائيًا.','success');
   }catch(error){announce(error.message||'تعذّر تحميل المجموعة التالية.','error');}
@@ -273,7 +273,7 @@ refs.selectAll.addEventListener('change', () => {
 
 refs.word.addEventListener('click', async () => {
   const chosen = selectedItems();
-  if (!chosen.length) return;
+  if (!chosen.length || state.busy) return;
   setBusy(true); announce('بدأ استخراج النصوص لإنشاء ملف Word.');
   const articles = new Array(chosen.length);
   let cursor = 0, finished = 0, failed = 0;
@@ -283,8 +283,7 @@ refs.word.addEventListener('click', async () => {
       const item = chosen[at];
       updateItem(item, 'جاري استخراج النص…', 'pending');
       try {
-        const accessTicket=await accessFor(stateProgress.source||item.url);
-        const data = await requestJSON('/api/article',{url:item.url,accessTicket});
+        const data = await inspectSession.request(stateProgress.source||item.url,'/api/article',{url:item.url});
         articles[at] = data;
         updateItem(item, 'تم استخراج النص', 'success');
       } catch (error) {
@@ -296,7 +295,7 @@ refs.word.addEventListener('click', async () => {
     }
   };
   try {
-    await accessFor(stateProgress.source||chosen[0].url);
+    await inspectSession.getTicket(stateProgress.source||chosen[0].url);
     await Promise.all(Array.from({length:Math.min(3,chosen.length)},work));
     const valid = articles.filter(Boolean);
     if (!valid.length) throw new Error('لم نتمكن من استخراج أي مقال. جرّب رابط مقال منفرد أو موقعًا آخر.');
@@ -313,11 +312,11 @@ refs.word.addEventListener('click', async () => {
   finally {setBusy(false);}
 });
 
-async function monitorArchive(item, jobId, ticket) {
+async function monitorArchive(item, jobId, session, scope) {
   for (let attempt=0; attempt<24; attempt++) {
     await sleep(6000);
     try {
-      const result = await requestJSON('/api/archive-status',{job:jobId,url:item.url,ticket});
+      const result = await session.request(scope,'/api/archive-status',{job:jobId,url:item.url});
       if (result.status==='success') {
         updateItem(item,'نجحت الأرشفة'+(result.archiveUrl?' — الرابط متاح':'، لكن تعذّر الحصول على الرابط'),'success',result.archiveUrl);
         saveActiveReport(item, result.archiveUrl ? 'success' : 'missing-link', item.status, result.archiveUrl);
@@ -329,8 +328,9 @@ async function monitorArchive(item, jobId, ticket) {
         return 'error';
       }
     } catch (error) {
+      // An authorization failure needs user attention; repeated polling cannot fix it.
       // A transient status error is not necessarily a failed capture.
-      if (attempt >= 23) break;
+      if (error.authorizationFailed || error.status === 403 || attempt >= 23) break;
     }
   }
   updateItem(item,'أُرسل الطلب، لكن لم يتأكد اكتمال الحفظ. راجعه لاحقًا في Wayback Machine.','pending');
@@ -347,13 +347,18 @@ refs.archive.addEventListener('click', async () => {
     setBusy(false);
     return;
   }
-  let ticket;
+  const scope = JSON.stringify(chosen.map(item=>item.url));
+  const session = new AccessSession({
+    ticketField:'ticket', errorCode:'ARCHIVE_AUTH_REQUIRED', request:requestJSON,
+    authorize:async () => {
+      announce('يجري التحقق الأمني قبل متابعة الأرشفة…');
+      const token = await getTurnstileToken('archive');
+      return requestJSON('/api/archive-authorize',{token,urls:JSON.parse(scope)});
+    }
+  });
   try {
     announce('يجري التحقق الأمني قبل بدء الأرشفة…');
-    const token = await getTurnstileToken('archive');
-    const result = await requestJSON('/api/archive-authorize',{token,urls:chosen.map(item=>item.url)});
-    ticket = result.ticket;
-    if (!ticket) throw new Error('لم يصدر تصريح الأرشفة.');
+    await session.getTicket(scope);
   } catch(error) {
     announce(error.message || 'تعذّر التحقق الأمني.', 'error');
     setBusy(false);
@@ -371,7 +376,7 @@ refs.archive.addEventListener('click', async () => {
   if (refs.previous) refs.previous.hidden = false;
   setBusy(true);
   announce('بدء إرسال المقالات إلى Wayback Machine. أبق هذه الصفحة مفتوحة أثناء العملية.');
-  let submitted=0, declined=0;
+  let submitted=0, declined=0, unconfirmedSubmissions=0;
   const tracks=[];
   for (let i=0;i<chosen.length;i++) {
     const item=chosen[i];
@@ -379,22 +384,38 @@ refs.archive.addEventListener('click', async () => {
     saveActiveReport(item, 'pending', item.status);
     setProgress(`إرسال الطلب ${i+1} من ${chosen.length} — تم قبول ${submitted} طلبات`);
     try {
-      const result=await requestJSON('/api/archive',{url:item.url,ticket});
+      const result=await session.request(scope,'/api/archive',{url:item.url});
       submitted++;
       updateItem(item,'تم إرسال الطلب، في انتظار تأكيد الحفظ…','pending');
       saveActiveReport(item, 'pending', item.status);
-      tracks.push(monitorArchive(item,result.jobId,ticket));
+      tracks.push(monitorArchive(item,result.jobId,session,scope));
     } catch (error) {
-      declined++;
-      updateItem(item,`لم يُقبل الطلب: ${error.message}`,'fail');
-      saveActiveReport(item, 'error', item.status);
+      const uncertain = !error.authorizationFailed && (error.status === undefined || error.status === 502);
+      if (uncertain) {
+        unconfirmedSubmissions++;
+        updateItem(item,'تعذّر تأكيد قبول الطلب؛ ربما وصل إلى خدمة الأرشفة. تحقّق في Wayback قبل إعادة إرساله.','pending');
+        saveActiveReport(item,'unconfirmed',item.status);
+      } else {
+        declined++;
+        updateItem(item,`لم يُقبل الطلب: ${error.message}`,'fail');
+        saveActiveReport(item, 'error', item.status);
+      }
+      if (error.authorizationFailed || error.code === 'ARCHIVE_AUTH_REQUIRED') {
+        // Do not prompt once for every remaining URL when renewal has failed.
+        for (const remaining of chosen.slice(i+1)) {
+          declined++;
+          updateItem(remaining,'لم يُرسل الطلب بسبب تعذّر تجديد التحقق الأمني. أعد المحاولة.','fail');
+          saveActiveReport(remaining,'error',remaining.status);
+        }
+        break;
+      }
     }
     if (i < chosen.length-1) await sleep(17_000);
   }
   setProgress(`أُرسل ${submitted} من ${chosen.length} طلبًا. يجري التحقق من نتيجة الحفظ…`);
   const states = await Promise.all(tracks);
   const success=states.filter(s => s==='success').length;
-  const notConfirmed=states.filter(s => s==='unconfirmed').length;
+  const notConfirmed=unconfirmedSubmissions+states.filter(s => s==='unconfirmed').length;
   const failed=declined+states.filter(s => s==='error').length;
   announce(`نجحت أرشفة ${success} مقالًا، وتعذّرت أرشفة ${failed}${notConfirmed?`، وتبقى ${notConfirmed} طلبًا دون تأكيد`:''}.`, failed||notConfirmed?'info':'success');
   setProgress('اكتملت متابعة الطلبات. يجري فتح صفحة روابط النسخ المؤرشفة…');
@@ -427,8 +448,7 @@ document.addEventListener('visibilitychange', () => {
     if(!cursor){announce('لا توجد صفحة تالية محفوظة لهذه المجموعة. يمكنك إعادة فحص صفحة الكاتب.','info');return;}
     setBusy(true);
     try{
-      const accessTicket=await accessFor(stateProgress.source);
-    const result=await requestJSON('/api/inspect',{url:stateProgress.source,mode:'author',cursor,accessTicket});
+      const result=await inspectSession.request(stateProgress.source,'/api/inspect',{url:stateProgress.source,mode:'author',cursor});
       showResults(result);
       announce('تم الانتقال إلى المجموعة التالية دون إعادة أرشفة المقالات المحفوظة سابقًا.','success');
       window.history.replaceState(null,'','/');
