@@ -9,18 +9,23 @@ export const TURNSTILE_HOSTS = Object.freeze({
 });
 
 export class TurnstileController {
-  constructor({getApi, locate}) {
+  constructor({getApi, locate, timeoutMs = 120_000,
+    setTimer = (fn,ms) => setTimeout(fn,ms), clearTimer = id => clearTimeout(id)}) {
     this.getApi = getApi;
     this.locate = locate;
     this.siteKey = '';
     this.widgets = new Map();
     this.pending = new Map();
+    this.timeoutMs = timeoutMs;
+    this.setTimer = setTimer;
+    this.clearTimer = clearTimer;
   }
 
   setSiteKey(nextKey) {
     if (nextKey === this.siteKey) return;
     const api = this.getApi();
     for (const pending of this.pending.values()) {
+      this.clearTimer(pending.timer);
       pending.reject(new Error('تغيّرت إعدادات Turnstile. أعد محاولة التحقق.'));
     }
     this.pending.clear();
@@ -31,10 +36,11 @@ export class TurnstileController {
     this.siteKey = nextKey || '';
   }
 
-  finish(action, token = null, error = null) {
+  finish(action, attempt, token = null, error = null) {
     const pending = this.pending.get(action);
-    if (!pending) return;
+    if (pending !== attempt) return;
     this.pending.delete(action);
+    this.clearTimer(pending.timer);
     if (error) pending.reject(error);
     else if (typeof token !== 'string' || !token) pending.reject(new Error('لم يصدر Turnstile رمز تحقق صالحًا.'));
     else pending.resolve(token);
@@ -54,30 +60,37 @@ export class TurnstileController {
       throw new Error('موضع اختبار Turnstile غير متاح في الصفحة. أعد تحميل الموقع.');
     }
 
-    let id = this.widgets.get(action);
-    const fresh = id === undefined;
-    if (fresh) {
-      // Turnstile's documented API uses CSS selectors such as "#turnstile-widget".
-      id = api.render('#' + hostId, {
-        sitekey:this.siteKey,
-        action,
-        execution:'execute',
-        appearance:'interaction-only',
-        callback:token => this.finish(action, token),
-        'error-callback':() => this.finish(action, null, new Error('فشل اختبار Turnstile. تحقق من الاتصال ثم أعد المحاولة.')),
-        'expired-callback':() => this.finish(action, null, new Error('انتهت صلاحية الاختبار. أعد المحاولة.'))
-      });
-      if (id === null || id === undefined) throw new Error('تعذّر إنشاء اختبار Turnstile.');
-      this.widgets.set(action, id);
+    // Give every attempt its own callbacks. A late reply from a removed widget
+    // must never supply an old, single-use token to a newer operation.
+    const previous = this.widgets.get(action);
+    if (previous !== undefined) {
+      try {api.remove(previous);} catch { /* stale ID after a library reload */ }
+      this.widgets.delete(action);
     }
-
     return new Promise((resolve,reject) => {
-      this.pending.set(action,{resolve,reject});
+      const attempt = {resolve,reject,timer:null};
+      this.pending.set(action,attempt);
+      const fail = message => this.finish(action,attempt,null,new Error(message));
       try {
-        if (!fresh) api.reset(id);
-        api.execute(id);
+        attempt.timer = this.setTimer(() => fail('انتهت مهلة انتظار Turnstile. تحقق من الاتصال ثم أعد المحاولة.'),this.timeoutMs);
+        const id = api.render('#' + hostId, {
+          sitekey:this.siteKey, action, execution:'execute', appearance:'interaction-only',
+          retry:'never', 'refresh-expired':'manual', 'refresh-timeout':'manual',
+          callback:token => this.finish(action,attempt,token),
+          'error-callback':() => {fail('فشل اختبار Turnstile. تحقق من الاتصال ثم أعد المحاولة.');return true;},
+          'expired-callback':() => fail('انتهت صلاحية الاختبار. أعد المحاولة.'),
+          'timeout-callback':() => fail('انتهت مهلة الاختبار التفاعلي. أعد المحاولة.'),
+          'unsupported-callback':() => fail('المتصفح لا يدعم اختبار Turnstile. جرّب متصفحًا آخر.'),
+          'before-interactive-callback':() => {
+            if (this.pending.get(action) === attempt) host.scrollIntoView?.({behavior:'smooth',block:'center'});
+          }
+        });
+        if (id === null || id === undefined) throw new Error('تعذّر إنشاء اختبار Turnstile.');
+        this.widgets.set(action,id);
+        // render() itself can call back synchronously on configuration errors.
+        if (this.pending.get(action) === attempt) api.execute(id);
       } catch (error) {
-        this.finish(action, null, error);
+        this.finish(action,attempt,null,error);
       }
     });
   }

@@ -12,7 +12,7 @@ const MAX_ARTICLES = 45;
 const ARCHIVE_BASE = 'https://web.archive.org';
 
 class ApiError extends Error {
-  constructor(message, status = 400) { super(message); this.status = status; }
+  constructor(message, status = 400, code = null) { super(message); this.status = status; this.code = code; }
 }
 
 function json(data, status = 200, headers = {}) {
@@ -440,7 +440,7 @@ async function verifyTurnstile(token, request, env, action = 'archive') {
     throw new ApiError('لم يتم إعداد مفاتيح Turnstile في Production.', 503);
   }
   if (typeof token !== 'string' || token.length < 8 || token.length > 2048) {
-    throw new ApiError('رمز التحقق الأمني غير صالح. أعد المحاولة.', 403);
+    throw new ApiError('رمز التحقق الأمني غير صالح. أعد المحاولة.', 403, 'TURNSTILE_REJECTED');
   }
   const body = {
     secret: env.TURNSTILE_SECRET_KEY,
@@ -450,7 +450,8 @@ async function verifyTurnstile(token, request, env, action = 'archive') {
   let response;
   try {
     response = await fetch(TURNSTILE_VERIFY_URL, {
-      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
+      signal:AbortSignal.timeout(15_000)
     });
   } catch {
     throw new ApiError('تعذّر الاتصال بخدمة Turnstile. حاول مجددًا.', 502);
@@ -461,7 +462,7 @@ async function verifyTurnstile(token, request, env, action = 'archive') {
   catch { throw new ApiError('استجابة Turnstile غير مفهومة.', 502); }
   if (result?.success !== true ||
       result.hostname !== new URL(request.url).hostname || result.action !== action) {
-    throw new ApiError('لم ينجح التحقق الأمني. أعد الضغط على زر الأرشفة لإجراء تحقق جديد.', 403);
+    throw new ApiError('لم ينجح التحقق الأمني. أعد محاولة العملية لإجراء تحقق جديد.', 403, 'TURNSTILE_REJECTED');
   }
 }
 async function issueArchiveTicket(request, env, urls) {
@@ -480,7 +481,7 @@ async function issueArchiveTicket(request, env, urls) {
 async function requireArchiveTicket(ticket, url, request, env) {
   if (typeof ticket !== 'string' || ticket.length > 6500 ||
       !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(ticket)) {
-    throw new ApiError('يجب إكمال تحقق Turnstile قبل الأرشفة.', 403);
+    throw new ApiError('يجب إكمال تحقق Turnstile قبل الأرشفة.', 403, 'ARCHIVE_AUTH_REQUIRED');
   }
   try {
     const [encoded,signature] = ticket.split('.');
@@ -496,7 +497,7 @@ async function requireArchiveTicket(ticket, url, request, env) {
         !Array.isArray(data.urls) || data.urls.length < 1 || data.urls.length > MAX_ARCHIVE_BATCH ||
         !data.urls.includes(await urlDigest(url))) throw new Error('expired or unauthorized URL');
   } catch {
-    throw new ApiError('انتهت صلاحية تصريح الأرشفة أو تغيّر اتصالك. أعد التحقق من Turnstile.', 403);
+    throw new ApiError('انتهت صلاحية تصريح الأرشفة أو تغيّر اتصالك. أعد التحقق من Turnstile.', 403, 'ARCHIVE_AUTH_REQUIRED');
   }
 }
 
@@ -588,13 +589,13 @@ export default {
       const url = safePublicUrl(payload.url);
       if (path === '/api/inspect') {
         await checkRate(env.INSPECT_LIMITER, request);
-        if (!await validateInspectTicket(env.TURNSTILE_SECRET_KEY,request,payload.accessTicket,url,'inspect')) throw new ApiError('تحقق Turnstile مطلوب لاستخراج المقالات.',403);
+        if (!await validateInspectTicket(env.TURNSTILE_SECRET_KEY,request,payload.accessTicket,url,'inspect')) throw new ApiError('تحقق Turnstile مطلوب لاستخراج المقالات.',403,'INSPECT_AUTH_REQUIRED');
         const mode = ['auto','article','author'].includes(payload.mode) ? payload.mode : 'auto';
         return json(await inspect(url, mode, payload.cursor || null));
       }
       if (path === '/api/article') {
         await checkRate(env.ARTICLE_LIMITER, request);
-        if (!await validateInspectTicket(env.TURNSTILE_SECRET_KEY,request,payload.accessTicket,url,'article')) throw new ApiError('انتهت صلاحية تصريح استخراج المقالات. أعد التحقق.',403);
+        if (!await validateInspectTicket(env.TURNSTILE_SECRET_KEY,request,payload.accessTicket,url,'article')) throw new ApiError('انتهت صلاحية تصريح استخراج المقالات. أعد التحقق.',403,'INSPECT_AUTH_REQUIRED');
         return json(await extractedArticle(url));
       }
       if (path === '/api/archive') {
@@ -608,7 +609,8 @@ export default {
       throw new ApiError('العنوان المطلوب غير موجود.', 404);
     } catch (error) {
       if (!(error instanceof ApiError)) console.error('Unexpected error:', error?.message || 'unknown');
-      return json({error:error instanceof ApiError ? error.message : 'حدث خطأ غير متوقع أثناء معالجة الطلب.'}, error instanceof ApiError ? error.status : 500);
+      return json({error:error instanceof ApiError ? error.message : 'حدث خطأ غير متوقع أثناء معالجة الطلب.',
+        ...(error instanceof ApiError && error.code ? {code:error.code} : {})}, error instanceof ApiError ? error.status : 500);
     }
   }
 };

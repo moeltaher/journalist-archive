@@ -9,5 +9,10 @@
     "deploy": "wrangler deploy",
     "test": "node --test tests/*.test.mjs"
   },
-  "devDependencies": {"wrangler": "^4.135.0"}
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "linkedom": "0.18.12",
+    "miniflare": "4.20260730.0",
+    "wrangler": "^4.135.0"
+  }
 }
